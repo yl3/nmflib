@@ -1,22 +1,22 @@
-"""Test mutlib.utils."""
+"""Test nmflib.utils."""
 
 import pytest
 import pandas as pd
 
-import mutlib
-import mutlib.contexts
+import nmflib
+import nmflib.contexts
 
 
 def test_revcomp():
-    assert mutlib.utils.revcomp('ACGT') == 'ACGT'
-    assert mutlib.utils.revcomp('AATTCCGG') == 'CCGGAATT'
-    assert mutlib.utils.revcomp('A') == 'T'
+    assert nmflib.utils.revcomp('ACGT') == 'ACGT'
+    assert nmflib.utils.revcomp('AATTCCGG') == 'CCGGAATT'
+    assert nmflib.utils.revcomp('A') == 'T'
 
 
 @pytest.mark.datafiles('test_data/hs37d5.1:1-100000.fa.gz')
 def test_get_context(datafiles):
     fasta_file = str(datafiles) + '/hs37d5.1:1-100000.fa.gz'
-    context_finder = mutlib.contexts.ContextFinder(fasta_file)
+    context_finder = nmflib.contexts.ContextFinder(fasta_file)
 
     # Flipped context
     assert context_finder.get_unnormalised_context('1', 10002, 3) == 'TAA'
@@ -63,10 +63,10 @@ def test_count_snv_types(datafiles):
     # Check that ref must be different to alt.
     with pytest.raises(ValueError):
         bad_alt = ['A', 'T', 'C']  # First alt is the same as first ref.
-        mutlib.contexts.count_snv_types(contexts, ref, bad_alt, samples, 3)
+        nmflib.contexts.count_snv_types(contexts, ref, bad_alt, samples, 3)
 
     # Correct ref, no problem
-    mut_counts = mutlib.contexts.count_snv_types(contexts, ref, alt, samples, 3)
+    mut_counts = nmflib.contexts.count_snv_types(contexts, ref, alt, samples, 3)
     expected_index = pd.DataFrame([('C>T', 'GCC'),
                                    ('T>A', 'ATT')])
     assert (mut_counts.index.to_frame() == expected_index.values).all(None)
@@ -84,7 +84,7 @@ def test_count_snv_types(datafiles):
          (1, 0)]
     )
     bad_ref = ['C', 'A', 'C']  # ref mismatch with the "reference"
-    mut_counts = mutlib.contexts.count_snv_types(contexts, bad_ref, alt,
+    mut_counts = nmflib.contexts.count_snv_types(contexts, bad_ref, alt,
                                                  samples, 3)
     assert (mut_counts == expected_values.values).all(None)
 
@@ -95,7 +95,7 @@ def test_count_snv_types(datafiles):
          ('GCC', False)],
         columns=['context', 'flipped']
     )
-    mut_counts = mutlib.contexts.count_snv_types(bad_contexts, ref, alt,
+    mut_counts = nmflib.contexts.count_snv_types(bad_contexts, ref, alt,
                                                  samples, 3)
     expected_index = pd.DataFrame([('C>T', 'GCC'),
                                    ('T>A', 'ATT')])
@@ -114,7 +114,7 @@ def test_compute_and_count_snv_types(datafiles):
     ref = ['A', 'C', 'A']
     alt = ['T', 'G', 'T']
     samples = ['sample_1', 'sample_1', 'sample_2']
-    mut_counts = mutlib.contexts.compute_and_count_snv_types(
+    mut_counts = nmflib.contexts.compute_and_count_snv_types(
         fasta_file, chroms, pos, ref, alt, samples, 3)
     expected_index = pd.DataFrame([('C>G', 'ACC'),
                                    ('T>A', 'TTA')])

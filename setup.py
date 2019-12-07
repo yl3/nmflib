@@ -1,8 +1,8 @@
 from setuptools import setup, find_packages
 
-setup(name='mutlib',
+setup(name='nmflib',
       version='0.0.0',
-      description='Point mutation analysis library',
+      description='Mutation NMF analysis library',
       author='Yilong Li',
       author_email='yilong.li.yl3@gmail.com',
       packages=find_packages('src'),
