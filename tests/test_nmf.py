@@ -40,3 +40,7 @@ def test_fit_nmf():
     W, H, n_iter, errors = nmflib.nmf.fit_nmf(
         SimpleNMFData.X, 2, max_iter=10000, tol=1e-10)
     SimpleNMFData.check_answer(W, H)
+
+    W, H, n_iter, errors = nmflib.nmf.fit_nmf(
+        SimpleNMFData.X, 2, max_iter=10000, tol=1e-10, use_numba=True)
+    SimpleNMFData.check_answer(W, H)
