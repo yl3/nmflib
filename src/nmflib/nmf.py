@@ -2,6 +2,7 @@
 # Copyright (C) 2019 Yilong Li (yilong.li.yl3@gmail.com) - All Rights Reserved
 
 
+import numba
 import logging
 import numpy as np
 import sklearn.decomposition._nmf
@@ -11,6 +12,7 @@ import time
 EPSILON = np.finfo(np.float32).eps
 
 
+@numba.njit
 def _mu_W(X, W, H):
     """Multiplicative KL-update for W.
 
@@ -25,14 +27,14 @@ def _mu_W(X, W, H):
 
     # Compute numerator.
     numerator = np.dot(W, H)
-    numerator[numerator == 0] = EPSILON
-    np.divide(X, numerator, out=numerator)
+    numerator = np.where(numerator == 0, EPSILON, numerator)
+    numerator = np.divide(X, numerator)
     numerator = np.dot(numerator, H.T)
 
     # Compute denominator
     H_sum = np.sum(H, axis=1)
-    denominator = H_sum[np.newaxis, :]
-    denominator[denominator == 0] = EPSILON
+    denominator = H_sum.reshape(1, -1)
+    denominator = np.where(denominator == 0, EPSILON, denominator)
 
     # Compute the update
     numerator /= denominator
@@ -41,6 +43,7 @@ def _mu_W(X, W, H):
     return delta_W
 
 
+@numba.njit
 def _mu_H(X, W, H):
     """Multiplicative KL-update for H.
 
@@ -54,14 +57,14 @@ def _mu_H(X, W, H):
     """
     # Compute numerator.
     numerator = np.dot(W, H)
-    numerator[numerator == 0] = EPSILON
-    np.divide(X, numerator, out=numerator)
+    numerator = np.where(numerator == 0, EPSILON, numerator)
+    numerator = np.divide(X, numerator)
     numerator = np.dot(W.T, numerator)
 
     # Compute denominator
     W_sum = np.sum(W, axis=0)
-    denominator = W_sum[:, np.newaxis]
-    denominator[denominator == 0] = EPSILON
+    denominator = W_sum.reshape(-1, 1)
+    denominator = np.where(denominator == 0, EPSILON, denominator)
 
     # Compute the update
     numerator /= denominator
