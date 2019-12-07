@@ -1,3 +1,5 @@
+numpy
 pandas
 progressbar2
 pysam
+scikit-learn
