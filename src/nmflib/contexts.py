@@ -6,7 +6,7 @@ import pandas as pd
 import progressbar
 import pysam
 
-import mutlib
+import nmflib
 
 
 class ContextFinder:
@@ -31,7 +31,7 @@ class ContextFinder:
         context = self.get_unnormalised_context(chrom, pos, context_len)
         centre = context[context_len // 2]
         if centre in ('A', 'G'):
-            context = mutlib.revcomp(context)
+            context = nmflib.revcomp(context)
             flipped = True
         else:
             flipped = False
@@ -79,7 +79,7 @@ def count_snv_types(contexts, ref, alt, samples, context_len=3):
     central_bases = contexts['context'].str[context_len // 2]
     central_bases = np.where(
         contexts['flipped'],
-        mutlib.COMPLEMENT[central_bases.values],
+        nmflib.COMPLEMENT[central_bases.values],
         central_bases)
     df = pd.DataFrame(
         {'ref': ref,
@@ -92,8 +92,8 @@ def count_snv_types(contexts, ref, alt, samples, context_len=3):
 
     flipped_mut = np.where(
         df['flipped'],
-        (mutlib.COMPLEMENT[df['ref'].values].values + '>'
-            + mutlib.COMPLEMENT[df['alt'].values].values),
+        (nmflib.COMPLEMENT[df['ref'].values].values + '>'
+            + nmflib.COMPLEMENT[df['alt'].values].values),
         df['ref'] + '>' + df['alt'])
     df['snv'] = flipped_mut
 
