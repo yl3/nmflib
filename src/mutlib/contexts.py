@@ -7,7 +7,6 @@ import progressbar
 import pysam
 
 import mutlib
-import mutlib.constants
 
 
 class ContextFinder:
