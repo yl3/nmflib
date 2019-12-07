@@ -1,2 +1,3 @@
 .coverage
 /test_data
+*.egg-info
