@@ -5,7 +5,9 @@
 import numba
 import logging
 import numpy as np
+import scipy.optimize
 import sklearn.decomposition._nmf
+import sklearn.metrics.pairwise
 import time
 
 
@@ -201,3 +203,22 @@ def fit_nmf(X, k, max_iter=200, tol=1e-4, verbose=0, random_state=None,
     W /= W_colsums[np.newaxis, :]
     H *= W_colsums[:, np.newaxis]
     return W, H, n_iter, errors
+
+
+def match_signatures(W1, W2):
+    """Match mutational signatures (columns) between W1 and W2.
+
+    The distance metric used in cosine similarity. Matching is done using
+    Hungarian algorithm.
+
+    Args:
+        W1 (array-like): An array of shape (<mutation contexts>, <signatures>).
+        W2 (array-like): An array of shape (<mutation contexts>, <signatures>).
+
+    Returns:
+        numpy.ndarray: An array of indices matching columns of W2 with columns
+            of W1.
+    """
+    dist_mat = sklearn.metrics.pairwise.cosine_distances(W1.T, W2.T)
+    _, W2_idx = scipy.optimize.linear_sum_assignment(dist_mat)
+    return W2_idx

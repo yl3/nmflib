@@ -44,3 +44,14 @@ def test_fit_nmf():
     W, H, n_iter, errors = nmflib.nmf.fit_nmf(
         SimpleNMFData.X, 2, max_iter=10000, tol=1e-10, use_numba=True)
     SimpleNMFData.check_answer(W, H)
+
+
+def test_match_signatures():
+    # Generate some random signatures
+    np.random.seed(0)
+    K = 10
+    signatures = np.random.dirichlet([0.5] * 96, K)
+    scramble_idx = np.random.choice(K, K, False)
+    scrambled_signatures = signatures[:, scramble_idx]
+    found_idx = nmflib.nmf.match_signatures(scrambled_signatures, signatures)
+    assert np.all(found_idx == scramble_idx)
