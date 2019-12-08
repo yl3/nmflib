@@ -2,7 +2,6 @@
 # Copyright (C) 2019 Yilong Li (yilong.li.yl3@gmail.com) - All Rights Reserved
 
 
-import numba
 import logging
 import numpy as np
 import scipy.optimize
@@ -73,67 +72,6 @@ def _mu_H(X, W, H):
     return delta_H
 
 
-@numba.njit
-def _mu_W_jit(X, W, H):
-    """Multiplicative KL-update for W.
-
-    Args:
-        X (numpy.ndarray): A nonnegative integer matrix of shape (M, N).
-        W (numpy.ndarray): A nonnegative matrix of shape (M, K) for current W.
-        H (numpy.ndarray): A nonnegative matrix of shape (K, N) for current H.
-
-    Returns:
-        numpy.ndarray: The multiplicative update for W.
-    """
-
-    # Compute numerator.
-    numerator = np.dot(W, H)
-    numerator = np.where(numerator == 0, EPSILON, numerator)
-    numerator = np.divide(X, numerator)
-    numerator = np.dot(numerator, H.T)
-
-    # Compute denominator
-    H_sum = np.sum(H, axis=1)
-    denominator = H_sum.reshape(1, -1)
-    denominator = np.where(denominator == 0, EPSILON, denominator)
-
-    # Compute the update
-    numerator /= denominator
-    delta_W = numerator
-
-    return delta_W
-
-
-@numba.njit
-def _mu_H_jit(X, W, H):
-    """Multiplicative KL-update for H.
-
-    Args:
-        X (numpy.ndarray): A nonnegative integer matrix of shape (M, N).
-        W (numpy.ndarray): A nonnegative matrix of shape (M, K) for current W.
-        H (numpy.ndarray): A nonnegative matrix of shape (K, N) for current H.
-
-    Returns:
-        numpy.ndarray: The multiplicative update for H.
-    """
-    # Compute numerator.
-    numerator = np.dot(W, H)
-    numerator = np.where(numerator == 0, EPSILON, numerator)
-    numerator = np.divide(X, numerator)
-    numerator = np.dot(W.T, numerator)
-
-    # Compute denominator
-    W_sum = np.sum(W, axis=0)
-    denominator = W_sum.reshape(-1, 1)
-    denominator = np.where(denominator == 0, EPSILON, denominator)
-
-    # Compute the update
-    numerator /= denominator
-    delta_H = numerator
-
-    return delta_H
-
-
 def _kl_divergence(X, W, H):
     """KL divergence for X ~ WH."""
     WH = np.dot(W, H)
@@ -154,8 +92,7 @@ def _kl_divergence(X, W, H):
     return res
 
 
-def fit_nmf(X, k, max_iter=200, tol=1e-4, verbose=0, random_state=None,
-            use_numba=False):
+def fit_nmf(X, k, max_iter=200, tol=1e-4, verbose=0, random_state=None):
     """Fit KL-NMF using multiplicative updates."""
     W, H = sklearn.decomposition._nmf._initialize_nmf(
         X, k, 'random', random_state=random_state)
@@ -167,16 +104,9 @@ def fit_nmf(X, k, max_iter=200, tol=1e-4, verbose=0, random_state=None,
     errors = []
 
     for n_iter in range(1, max_iter + 1):
-        if use_numba:
-            delta_W = _mu_W_jit(X, W, H)
-        else:
-            delta_W = _mu_W(X, W, H)
+        delta_W = _mu_W(X, W, H)
         W *= delta_W
-
-        if use_numba:
-            delta_H = _mu_H_jit(X, W, H)
-        else:
-            delta_H = _mu_H(X, W, H)
+        delta_H = _mu_H(X, W, H)
         H *= delta_H
 
         # Test for convergence every 10 iterations.
