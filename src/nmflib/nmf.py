@@ -168,9 +168,8 @@ def fit_nmf(X, k, S=None, max_iter=200, tol=1e-4, verbose=False,
             errors.append(error)
             if verbose:
                 elapsed = time.time() - start_time
-                logging.info(
-                    "Iteration %02d after %.3f seconds, error: %f".format(
-                        n_iter, elapsed, error))
+                logging.info("Iteration {} after {:.3f} seconds, error: {}"
+                             .format(n_iter, elapsed, error))
             if (previous_error - error) / error_at_init < tol:
                 break
             previous_error = error
@@ -180,7 +179,7 @@ def fit_nmf(X, k, S=None, max_iter=200, tol=1e-4, verbose=False,
         errors.append(error)
         if verbose:
             elapsed = time.time() - start_time
-            msg = ("Stopped after iteration %02d after %.3f seconds, error: %f"
+            msg = ("Stopped after iteration {} after {:.3f} seconds, error: {}"
                    .format(n_iter, elapsed, error))
             logging.info(msg)
 

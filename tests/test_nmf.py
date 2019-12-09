@@ -1,7 +1,9 @@
 """Test NMF code."""
 
+import logging
 import numpy as np
 import pandas as pd
+import re
 
 import nmflib.constants
 import nmflib.nmf
@@ -58,11 +60,21 @@ class ScaledNMFData(SimpleNMFData):
                        [0,  50, 60, 600]])
 
 
-def test_fit_nmf():
+def test_fit_nmf(caplog):
     """Test fitting a regular NMF."""
+    caplog.set_level(logging.INFO)
     W, H, n_iter, errors = nmflib.nmf.fit_nmf(
         SimpleNMFData.X, 2, max_iter=10000, tol=1e-10)
     SimpleNMFData.check_answer(W, H)
+
+    # Test logging.
+    W, H, n_iter, errors = nmflib.nmf.fit_nmf(
+        SimpleNMFData.X, 2, max_iter=21, tol=1e-10, verbose=True)
+    assert re.search(r"Iteration 10 after \S+ seconds, error: ", caplog.text)
+    assert re.search(r"Iteration 20 after \S+ seconds, error: ", caplog.text)
+    assert re.search(
+        r"Stopped after iteration 21 after \S+ seconds, error: ",
+        caplog.text)
 
 
 def test_fit_nmf_scaled():
