@@ -1,6 +1,9 @@
 """Test NMF code."""
 
 import numpy as np
+import pandas as pd
+
+import nmflib.constants
 import nmflib.nmf
 
 
@@ -78,3 +81,22 @@ def test_match_signatures():
     scrambled_signatures = signatures[:, scramble_idx]
     found_idx = nmflib.nmf.match_signatures(scrambled_signatures, signatures)
     assert np.all(found_idx == scramble_idx)
+
+
+def test_context_rate_matrix():
+    # Test with sample indices.
+    sample_names = ['s0', 's1', 's2', 's3']
+    scale_mat = nmflib.nmf.context_rate_matrix(
+        pd.Series([False, True, False, True], index=sample_names))
+    assert all(scale_mat.columns == sample_names)
+    scale_mat_trinucs = scale_mat.index.get_level_values(1)
+    for k in [0, 2]:
+        assert all(scale_mat[sample_names[k]].values
+                   == nmflib.constants.HUMAN_GENOME_TRINUCS[scale_mat_trinucs])
+    for k in [1, 3]:
+        assert all(scale_mat[sample_names[k]].values
+                   == nmflib.constants.HUMAN_EXOME_TRINUCS[scale_mat_trinucs])
+
+    # Test without sample indices.
+    scale_mat = nmflib.nmf.context_rate_matrix([False, True, False, True])
+    assert all(scale_mat.columns == [0, 1, 2, 3])
