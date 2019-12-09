@@ -209,10 +209,16 @@ def match_signatures(W1, W2):
     return W2_idx
 
 
-def mut_context_df():
+def mut_context_df(relative=True):
     """Compute the opportunity mutation type in each context.
 
     Currently only supports the 96 trinucleotide pyrimidine strand SNV types.
+
+    Args:
+        relative (bool): Whether to return the absolute opportunity counts. If
+            False, the returned values are in [0, 1] and correspond to the
+            proportion of each context in the whole genome that is (estimated to
+            be) observable in whole-exome sequencing.
 
     Returns:
         pandas.DataFrame: A data frame giving the contexts counts in the genome
@@ -224,14 +230,19 @@ def mut_context_df():
     mut_context_types = mut_context_types.to_frame()
     sel = mut_context_types[0].str[0] == mut_context_types[1].str[1]
     mut_context_types = mut_context_types.loc[sel]
-    mut_context_types = mut_context_types.merge(
-        nmflib.constants.HUMAN_GENOME_TRINUCS.to_frame(),
-        left_on=1,
-        right_index=True)
-    mut_context_types = mut_context_types.merge(
-        nmflib.constants.HUMAN_EXOME_TRINUCS.to_frame(),
-        left_on=1,
-        right_index=True)
+
+    if relative:
+        gw_rates = pd.Series([1.0] * len(nmflib.constants.HUMAN_GENOME_TRINUCS),
+                             index=nmflib.constants.HUMAN_GENOME_TRINUCS.index)
+        ew_rates = pd.Series(nmflib.constants.HUMAN_EXOME_TRINUCS
+                             / nmflib.constants.HUMAN_GENOME_TRINUCS)
+    else:
+        gw_rates = nmflib.constants.HUMAN_GENOME_TRINUCS
+        ew_rates = nmflib.constants.HUMAN_EXOME_TRINUCS
+    mut_context_types = mut_context_types.merge(gw_rates.to_frame(), left_on=1,
+                                                right_index=True)
+    mut_context_types = mut_context_types.merge(ew_rates.to_frame(), left_on=1,
+                                                right_index=True)
 
     # After merging the counts, drop the first two columns that correspond to
     # the index anyways. Then name the remaining columns properly.
@@ -262,7 +273,7 @@ def context_rate_matrix(sample_is_exome, relative=True):
         pandas.DataFrame: A data frame of shape (96, len(sample_is_exome)) of
             the relative or absolute opportunities).
     """
-    context_counts = mut_context_df()
+    context_counts = mut_context_df(relative)
     counts_to_use = [context_counts['ew_rate']
                      if x else context_counts['gw_rate']
                      for x in sample_is_exome]

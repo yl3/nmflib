@@ -99,7 +99,7 @@ def test_context_rate_matrix():
     # Test with sample indices.
     sample_names = ['s0', 's1', 's2', 's3']
     scale_mat = nmflib.nmf.context_rate_matrix(
-        pd.Series([False, True, False, True], index=sample_names))
+        pd.Series([False, True, False, True], index=sample_names), False)
     assert all(scale_mat.columns == sample_names)
     scale_mat_trinucs = scale_mat.index.get_level_values(1)
     for k in [0, 2]:
@@ -109,6 +109,20 @@ def test_context_rate_matrix():
         assert all(scale_mat[sample_names[k]].values
                    == nmflib.constants.HUMAN_EXOME_TRINUCS[scale_mat_trinucs])
 
+    # Test relative rates
+    scale_mat = nmflib.nmf.context_rate_matrix([False, True, False, True], True)
+    scale_mat_trinucs = scale_mat.index.get_level_values(1)
+    gw_relative = pd.Series(
+        np.repeat(1.0, len(nmflib.constants.HUMAN_GENOME_TRINUCS)),
+        index=nmflib.constants.HUMAN_GENOME_TRINUCS.index)
+    ew_relative = (nmflib.constants.HUMAN_EXOME_TRINUCS
+                   / nmflib.constants.HUMAN_GENOME_TRINUCS)
+    for k in [0, 2]:
+        assert all(scale_mat[k].values == gw_relative[scale_mat_trinucs])
+    for k in [1, 3]:
+        assert all(scale_mat[k].values == ew_relative[scale_mat_trinucs])
+
     # Test without sample indices.
-    scale_mat = nmflib.nmf.context_rate_matrix([False, True, False, True])
+    scale_mat = nmflib.nmf.context_rate_matrix([False, True, False, True],
+                                               False)
     assert all(scale_mat.columns == [0, 1, 2, 3])
