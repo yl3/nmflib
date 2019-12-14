@@ -2,12 +2,13 @@
 # Copyright (C) 2019 Yilong Li (yilong.li.yl3@gmail.com) - All Rights Reserved
 
 
-import logging
 import numpy as np
 import pandas as pd
 import scipy.optimize
 import sklearn.decomposition._nmf
 import sklearn.metrics.pairwise
+
+import logging
 import time
 
 import nmflib.constants
@@ -122,6 +123,48 @@ def _kl_divergence(X, W, H, S=None):
     res += sum_E_exp - np.sum(X_raveled)
 
     return res
+
+
+def gof(X, X_exp, sim_count=100, random_state=None):
+    """Bootstrapped goodness-of-fit for count data NMF.
+
+    Given that X ~ Poisson(X_exp), compute the P value for each column in X
+    given X_exp. Then Kolmogorov-Smirnov test to estimate goodness-of-fit.
+
+    Args:
+        X (array-like): Observed counts: a nonnegative integer matrix of shape
+            (M, N).
+        X_exp (array-like): A nonnegative expected values matrix of shape
+            (M, N).
+        sim_count (int): How many simulated instances of X should be generated?
+        random_state (int): Random seed.
+
+    Returns:
+        gof_pval (float): Goodness-of-fit estimate for the entire matrix.
+        gof_data (float): Goodness-of-fit P-values for each sample (i.e. column
+            of X) individually.
+    """
+    if random_state is not None:
+        np.random.seed(random_state)
+
+    # Observed log-likelihood of each sample - represented as a row vector.
+    obs_loglik_rowvec = (scipy.stats.poisson.logpmf(X, X_exp)
+                         .sum(axis=0)
+                         .reshape(1, -1))
+
+    # Simulated log-likelihood matrices.
+    sim_logliks = []
+    for k in range(sim_count):
+        sim_X = scipy.stats.poisson.rvs(X_exp)
+        sim_logliks.append(scipy.stats.poisson.logpmf(sim_X, X_exp).sum(axis=0))
+
+    # Calculate empirical P values for row sample.
+    signif_simuls = np.sum(np.array(sim_logliks) <= obs_loglik_rowvec, axis=0)
+    sample_pvals = signif_simuls / sim_count
+
+    # Calculate overall goodness-of-fit P value.
+    gof_D, gof_pval = scipy.stats.kstest(sample_pvals, 'uniform')
+    return gof_pval, sample_pvals
 
 
 def fit(X, k, S=None, max_iter=200, tol=1e-4, verbose=False, random_state=None):

@@ -4,6 +4,7 @@ import logging
 import numpy as np
 import pandas as pd
 import re
+import scipy.stats
 
 import nmflib.constants
 import nmflib.nmf
@@ -123,3 +124,29 @@ def test_context_rate_matrix():
     scale_mat = nmflib.nmf.context_rate_matrix([False, True, False, True],
                                                False)
     assert all(scale_mat.columns == [0, 1, 2, 3])
+
+
+def test_nmf_gof():
+    """Test nmf.gof() function."""
+    X = SimpleNMFData.X
+    X_exp = np.matmul(SimpleNMFData.W_true, SimpleNMFData.H_true)
+
+    # Observed is expected - P value should be 0 since no simulation should get
+    # this high a likelihood.
+    pval, data = nmflib.nmf.gof(X, X_exp, random_state=0)
+    assert pval == 0.0
+
+    # Observed is very far from expected - P value should be 0 since no
+    # simulation should be always more likely than the expected value.
+    pval, data = nmflib.nmf.gof(X, X_exp * 100, random_state=0)
+    assert pval == 0.0
+
+    # Create 10 simulations and choose the middle one. That one should have a
+    # midrange likelihood on average.
+    sim_X = [scipy.stats.poisson.rvs(X_exp, random_state=0) for k in range(11)]
+    sim_X_logliks = [np.sum(scipy.stats.poisson.logpmf(X, X_exp))
+                     for X in sim_X]
+    sim_X = list(zip(sim_X_logliks, sim_X))
+    sim_X = sorted(sim_X, key=lambda x: x[0])
+    pval, data = nmflib.nmf.gof(sim_X[5][1], X_exp, random_state=0)
+    assert 0.2 <= pval <= 0.8
