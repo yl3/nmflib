@@ -72,5 +72,7 @@ We can use this to get the second derivative, too.
 
 $$
 \frac{\delta^2}{\delta^2 r} = \sum_{m,n} l(r \mid x_{mn} ; \mu_{mn})  \\
-MN(-\psi^2 (r) + \psi(r)) + \sum_{m, n} \psi^2 (x_{mn} + r) - \sum_{m, n} \log(\mu_{mn} + r) - \sum_{m, n} \left(\frac{x_{mn}}{\mu_{mn} + r} + \frac{x_{mn} + r}{(\mu_{mn} + r)^2}\right)
+= MN(-\psi^2 (r) + \frac{1}{r}) + \sum_{m, n} \psi^2 (x_{mn} + r) - \sum_{m, n} \frac{2}{\mu_{mn} + r} + \sum_{m, n} \frac{x_{mn} + r}{(\mu_{mn} + r)^2}
 $$
+
+With the first and the second derivate, Newton's method can be used during iterations.
