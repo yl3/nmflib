@@ -124,8 +124,7 @@ def _kl_divergence(X, W, H, S=None):
     return res
 
 
-def fit_nmf(X, k, S=None, max_iter=200, tol=1e-4, verbose=False,
-            random_state=None):
+def fit(X, k, S=None, max_iter=200, tol=1e-4, verbose=False, random_state=None):
     """Fit KL-NMF using multiplicative updates.
 
     Args:
@@ -173,15 +172,6 @@ def fit_nmf(X, k, S=None, max_iter=200, tol=1e-4, verbose=False,
             if (previous_error - error) / error_at_init < tol:
                 break
             previous_error = error
-
-    if n_iter % 10 != 0:
-        error = _kl_divergence(X, W, H, S)
-        errors.append(error)
-        if verbose:
-            elapsed = time.time() - start_time
-            msg = ("Stopped after iteration {} after {:.3f} seconds, error: {}"
-                   .format(n_iter, elapsed, error))
-            logging.info(msg)
 
     # Scale W and H such that W columns sum to 1.
     W_colsums = np.sum(W, axis=0)
