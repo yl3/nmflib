@@ -7,6 +7,7 @@ import pandas as pd
 import scipy.optimize
 import sklearn.decomposition._nmf
 import sklearn.metrics.pairwise
+import sys
 
 import logging
 import time
@@ -123,6 +124,55 @@ def _kl_divergence(X, W, H, S=None):
     res += sum_E_exp - np.sum(X_raveled)
 
     return res
+
+
+def loglik(X, X_exp, theta=None):
+    """Compute poisson or negative binomial log-likelihood.
+
+    Args:
+        X (numpy.ndarray): A nonnegative integer matrix of shape (M, N).
+        X_exp (numpy.ndarray): A nonnegative matrix for expected values of X.
+        theta (float): If provided, then negative binomial log-likelihood is
+            computed using `theta` as the dispersion parameter.
+
+    Returns:
+        numpy.ndarray: The log-likelihood for each element in X.
+    """
+    if theta is None:
+        logliks = scipy.stats.poisson.logpmf(X, X_exp)
+    else:
+        p = 1 - theta / (theta + X_exp)  # p has the same shape as X.
+        logliks = scipy.stats.nbinom.logpmf(X, theta, p)
+    return logliks
+
+
+def calc_aic(loglik, k):
+    """Compute AIC.
+
+    Args:
+        loglik (float): Log-likelihood of the current model.
+        k (int): Number of free parameters in the current model.
+
+    Returns:
+        float: The AIC value.
+    """
+    aic = 2 * k - 2 * loglik
+    return aic
+
+
+def calc_bic(loglik, k, n):
+    """Compute BIC.
+
+    Args:
+        loglik (float): Log-likelihood of the current model.
+        k (int): Number of free parameters in the current model.
+        n (int): Number of observations, i.e. number of samples.
+
+    Returns:
+        float: The BIC value.
+    """
+    bic = np.log(n) * k - 2 * loglik
+    return bic
 
 
 def gof(X, X_exp, sim_count=None, random_state=None):
@@ -374,23 +424,33 @@ class SingleNMFModel:
 
         Args:
             print_dots (bool): Whether to print a dot for each random
-                initiation.
+                initiation to STDERR.
             **kwargs: Keyword arguments for :func:`nmflib.nmf.fit`.
         """
+        start_time = time.time()
+
         # Compute the best decomposition.
         errors_best = None
         for _ in range(self.random_inits):
             if print_dots:
-                print('.', end='')
+                sys.stderr.write('.')
             W, H, n_iter, errors = fit(self.X, self.rank, **kwargs)
             if errors_best is None or errors[-1] < errors_best[-1]:
                 W_best, H_best, n_iter_best, = W, H, n_iter
                 errors_best = errors
+        sys.stderr.write('\n')
 
         # Calculate goodness-of-fit.
         X_pred = np.matmul(W_best, H_best)
         gof_pval, sample_gof_pval, sim_logliks = gof(self.X, X_pred,
                                                      self.gof_sim_count)
+
+        # Calculate AIC and BIC.
+        fitted_loglik = np.sum(loglik(self.X, X_pred))
+        aic = calc_aic(fitted_loglik, self.rank)
+        bic = calc_bic(fitted_loglik, self.rank, np.prod(self.X.shape))
+
+        elapsed = time.time() - start_time
 
         # Save results.
         self.fitted = {'W': W_best,
@@ -398,7 +458,17 @@ class SingleNMFModel:
                        'gof': gof_pval,
                        'sample_gof': sample_gof_pval,
                        'n_iter': n_iter_best,
-                       'errors': errors_best}
+                       'errors': errors_best,
+                       'aic': aic,
+                       'bic': bic,
+                       'elapsed': elapsed}
+
+    def __str__(self):
+        M, N = self.X.shape
+        out_str = f'Poisson-NMF(M={M}, N={N}, K={self.rank})'
+        if self.fitted is not None:
+            out_str += ' *'
+        return out_str
 
 
 class SignaturesModel:
@@ -427,8 +497,9 @@ class SignaturesModel:
             The best fit of each random initialisation is kept.
         gof_sim_count (int): Number of simulations for the goodness-of-fit
             computation.
-        model_of_rank (dict): (Fitted) :class:`SingleNMFModel` indexed by each
-            rank to be tested. :meth:`fit` must be run first.
+        fitted (pandas.DataFrame): A data frame indexed by the ranks to be
+            tested with columns for the actual model and the model fitting
+            outputs.
     """
 
     def __init__(self, X, ranks_to_test, S=None, random_inits=20,
@@ -446,11 +517,20 @@ class SignaturesModel:
         Args:
             **kwargs: Keyword arguments for :func:`nmflib.nmf.fit`.
         """
-        self.model_of_rank = {}
+        model_of_rank = {}
         for rank in self.ranks_to_test:
-            print(rank, end='')
-            self.model_of_rank[rank] = SingleNMFModel(self.X, rank, self.S,
-                                                      self.random_inits,
-                                                      self.gof_sim_count)
-            self.model_of_rank[rank].fit(print_dots=True)
-            print('')
+            sys.stderr.write(str(rank))
+            model_of_rank[rank] = SingleNMFModel(self.X, rank, self.S,
+                                                 self.random_inits,
+                                                 self.gof_sim_count)
+            model_of_rank[rank].fit(print_dots=True)
+        model_tuples = []
+        for rank in self.ranks_to_test:
+            m = model_of_rank[rank]
+            model_tuples.append((m, m.fitted['gof'], m.fitted['aic'],
+                                 m.fitted['bic'], m.fitted['n_iter'],
+                                 m.fitted['errors'][-1]))
+        columns = ('nmf_model', 'gof', 'aic', 'bic', 'n_iter', 'final_error')
+        out_df = pd.DataFrame(model_tuples, index=self.ranks_to_test,
+                              columns=columns)
+        self.fitted = out_df

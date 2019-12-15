@@ -160,7 +160,11 @@ def test_signatures_model():
     sim_X = scipy.stats.poisson.rvs(X_exp, random_state=0)
     sig_models = nmflib.nmf.SignaturesModel(sim_X, [1, 2, 3])
     sig_models.fit()
-    assert (sig_models.model_of_rank[2].fitted['gof']
-            > sig_models.model_of_rank[1].fitted['gof'])
-    assert (sig_models.model_of_rank[2].fitted['gof']
-            > sig_models.model_of_rank[3].fitted['gof'])
+    assert (sig_models.fitted.loc[2, 'gof']
+            > sig_models.fitted.loc[1, 'gof'])
+    assert (sig_models.fitted.loc[2, 'gof']
+            > sig_models.fitted.loc[3, 'gof'])
+
+    # Explicitly check SingleNMFModel.__str__().
+    assert (sig_models.fitted.loc[1, 'nmf_model'].__str__()
+            == 'Poisson-NMF(M=4, N=4, K=1) *')
