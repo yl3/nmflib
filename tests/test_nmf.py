@@ -133,13 +133,15 @@ def test_nmf_gof():
 
     # Observed is expected - P value should be 0 since no simulation should get
     # this high a likelihood.
-    pval, data = nmflib.nmf.gof(X, X_exp, random_state=0)
+    pval, data, _ = nmflib.nmf.gof(X, X_exp, random_state=0)
     assert pval == 0.0
+    assert np.all(np.array(data) == 1.0)
 
     # Observed is very far from expected - P value should be 0 since no
     # simulation should be always more likely than the expected value.
-    pval, data = nmflib.nmf.gof(X, X_exp * 100, random_state=0)
+    pval, data, _ = nmflib.nmf.gof(X, X_exp * 100, random_state=0)
     assert pval == 0.0
+    assert np.all(np.array(data) == 0.0)
 
     # Create 10 simulations and choose the middle one. That one should have a
     # midrange likelihood on average.
@@ -148,5 +150,5 @@ def test_nmf_gof():
                      for X in sim_X]
     sim_X = list(zip(sim_X_logliks, sim_X))
     sim_X = sorted(sim_X, key=lambda x: x[0])
-    pval, data = nmflib.nmf.gof(sim_X[5][1], X_exp, random_state=0)
+    pval, _, _ = nmflib.nmf.gof(sim_X[5][1], X_exp, random_state=0)
     assert 0.2 <= pval <= 0.8
