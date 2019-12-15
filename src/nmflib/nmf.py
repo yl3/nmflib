@@ -200,8 +200,7 @@ def fit(X, k, S=None, max_iter=200, tol=1e-4, verbose=False, random_state=None):
 
     # Set up initial values.
     start_time = time.time()
-    error_at_init = _kl_divergence(X, W, H)
-    previous_error = error_at_init
+    error_at_init = previous_error = None
     errors = []
 
     for n_iter in range(1, max_iter + 1):
@@ -218,7 +217,9 @@ def fit(X, k, S=None, max_iter=200, tol=1e-4, verbose=False, random_state=None):
                 elapsed = time.time() - start_time
                 logging.info("Iteration {} after {:.3f} seconds, error: {}"
                              .format(n_iter, elapsed, error))
-            if (previous_error - error) / error_at_init < tol:
+            if error_at_init is None:
+                error_at_init = error
+            elif (previous_error - error) / error_at_init < tol:
                 break
             previous_error = error
 
