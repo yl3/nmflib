@@ -152,3 +152,15 @@ def test_nmf_gof():
     sim_X = sorted(sim_X, key=lambda x: x[0])
     pval, _, _ = nmflib.nmf.gof(sim_X[5][1], X_exp, random_state=0)
     assert 0.2 <= pval <= 0.8
+
+
+def test_signatures_model():
+    """Test SignaturesModel and SingleNMFModel classes."""
+    X_exp = np.matmul(SimpleNMFData.W_true, SimpleNMFData.H_true)
+    sim_X = scipy.stats.poisson.rvs(X_exp, random_state=0)
+    sig_models = nmflib.nmf.SignaturesModel(sim_X, [1, 2, 3])
+    sig_models.fit()
+    assert (sig_models.model_of_rank[2].fitted['gof']
+            > sig_models.model_of_rank[1].fitted['gof'])
+    assert (sig_models.model_of_rank[2].fitted['gof']
+            > sig_models.model_of_rank[3].fitted['gof'])

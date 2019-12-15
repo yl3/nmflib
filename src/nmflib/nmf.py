@@ -322,3 +322,134 @@ def context_rate_matrix(sample_is_exome, relative=True):
     else:
         scale_mat = scale_mat.T.reset_index(drop=True).T
     return scale_mat
+
+
+class SingleNMFModel:
+    """An NMF model for a mutation count matrix.
+
+    Args:
+        X (numpy.ndarray): A non-negative mutation counts matrix of shape
+            (M, N).
+        rank (int): Rank of the NMF model.
+        S (numpy.ndarray): A matrix of values [0, 1] of shape (M, N) indicating
+            the proportion of mutations of each of the M contexts that cannot be
+            observed. See also :func:`nmflib.nmf.context_rate_matrix`.
+        random_inits (int): Number of random initialisations per rank to fit.
+            The best fit of each random initialisation is kept.
+        gof_sim_count (int): Number of simulations for the goodness-of-fit
+            computation. Defaults to the value used in :func:`nmflib.nmf.gof`.
+
+    Attributes:
+        X (numpy.ndarray): A non-negative mutation counts matrix of shape
+            (M, N).
+        rank (int): Rank of the NMF model.
+        S (numpy.ndarray): A matrix of values [0, 1] of shape (M, N) indicating
+            the proportion of mutations of each of the M contexts that cannot be
+            observed. See also :func:`nmflib.nmf.context_rate_matrix`.
+        random_inits (int): Number of random initialisations per rank to fit.
+            The best fit of each random initialisation is kept.
+        gof_sim_count (int): Number of simulations for the goodness-of-fit
+            computation.
+        fitted (dict): A dictionary of keys ('W', 'H', 'gof', 'sample_gof',
+            'n_iter', 'errors') for the fitted W matrix of shape (M, k), the
+            fitted H matrix of shape (k, N), the overall simulated
+            goodness-of-fit estimate of the model, the simulated
+            goodness-of-fit values for each sample, the number of iterations and
+            the errors, respectively.
+    """
+
+    def __init__(self, X, rank, S=None, random_inits=20, gof_sim_count=None):
+        self.X = X
+        self.rank = rank
+        self.S = S
+        self.random_inits = random_inits
+        self.gof_sim_count = gof_sim_count
+        self.fitted = None
+
+    def fit(self, print_dots=True, **kwargs):
+        """Fit the current NMF model and compute goodness-of-fit.
+
+        The results are stored in :attr:`fitted`.
+
+        Args:
+            print_dots (bool): Whether to print a dot for each random
+                initiation.
+            **kwargs: Keyword arguments for :func:`nmflib.nmf.fit`.
+        """
+        # Compute the best decomposition.
+        errors_best = None
+        for _ in range(self.random_inits):
+            if print_dots:
+                print('.', end='')
+            W, H, n_iter, errors = fit(self.X, self.rank, **kwargs)
+            if errors_best is None or errors[-1] < errors_best[-1]:
+                W_best, H_best, n_iter_best, = W, H, n_iter
+                errors_best = errors
+
+        # Calculate goodness-of-fit.
+        X_pred = np.matmul(W_best, H_best)
+        gof_pval, sample_gof_pval, sim_logliks = gof(self.X, X_pred,
+                                                     self.gof_sim_count)
+
+        # Save results.
+        self.fitted = {'W': W_best,
+                       'H': H_best,
+                       'gof': gof_pval,
+                       'sample_gof': sample_gof_pval,
+                       'n_iter': n_iter_best,
+                       'errors': errors_best}
+
+
+class SignaturesModel:
+    """Generic class for fitting signatures and model selection.
+
+    Args:
+        X (numpy.ndarray): A non-negative mutation counts matrix of shape
+            (M, N).
+        ranks_to_test (iterable): A list of ranks to test.
+        S (numpy.ndarray): A matrix of values [0, 1] of shape (M, N) indicating
+            the proportion of mutations of each of the M contexts that cannot be
+            observed. See also :func:`nmflib.nmf.context_rate_matrix`.
+        random_inits (int): Number of random initialisations per rank to fit.
+            The best fit of each random initialisation is kept.
+        gof_sim_count (int): Number of simulations for the goodness-of-fit
+            computation. Defaults to the value used in :func:`nmflib.nmf.gof`.
+
+    Attributes:
+        X (numpy.ndarray): A non-negative mutation counts matrix of shape
+            (M, N).
+        ranks_to_test (iterable): A list of ranks to test.
+        S (numpy.ndarray): A matrix of values [0, 1] of shape (M, N) indicating
+            the proportion of mutations of each of the M contexts that cannot be
+            observed. See also :func:`nmflib.nmf.context_rate_matrix`.
+        random_inits (int): Number of random initialisations per rank to fit.
+            The best fit of each random initialisation is kept.
+        gof_sim_count (int): Number of simulations for the goodness-of-fit
+            computation.
+        model_of_rank (dict): (Fitted) :class:`SingleNMFModel` indexed by each
+            rank to be tested. :meth:`fit` must be run first.
+    """
+
+    def __init__(self, X, ranks_to_test, S=None, random_inits=20,
+                 gof_sim_count=None):
+        self.X = X
+        self.ranks_to_test = ranks_to_test
+        self.S = S
+        self.random_inits = random_inits
+        self.gof_sim_count = gof_sim_count
+        self.fitted = None
+
+    def fit(self, **kwargs):
+        """Fit all NMF ranks and store their goodness-of-fit values.
+
+        Args:
+            **kwargs: Keyword arguments for :func:`nmflib.nmf.fit`.
+        """
+        self.model_of_rank = {}
+        for rank in self.ranks_to_test:
+            print(rank, end='')
+            self.model_of_rank[rank] = SingleNMFModel(self.X, rank, self.S,
+                                                      self.random_inits,
+                                                      self.gof_sim_count)
+            self.model_of_rank[rank].fit(print_dots=True)
+            print('')
