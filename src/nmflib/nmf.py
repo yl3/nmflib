@@ -5,6 +5,7 @@
 import numpy as np
 import pandas as pd
 import scipy.optimize
+from scipy.special import digamma, polygamma
 import sklearn.decomposition._nmf
 import sklearn.metrics.pairwise
 import sys
@@ -166,6 +167,30 @@ def _mu_H(X, W, H, S=None, O=None, r=None):  # noqa: 471
     return delta_H
 
 
+def _iterate_nb_theta(X, mu, r):
+    """Use Newton's method to iterate negative binomial dispersion parameter.
+
+    Args:
+        X (numpy.ndarray): An array of counts.
+        mu (numpy.ndarray): The expected value for each observed count in X.
+        r (float): The current value of the negative binomial dispersion
+            parameter.
+
+    Returns:
+        float: The next iterated value of r.
+    """
+    def trigamma(x):
+        return polygamma(1, x)
+
+    elems = np.prod(X.shape)
+    score = (elems * (-digamma(r) + np.log(r) + 1)
+             + np.sum(digamma(X + r) - np.log(mu + r) - (X + r) / (mu + r))
+    info = (elems * (-trigamma(r) + 1 / r)
+            + np.sum(trigamma(X + r) - 2 / (mu + r) + (X + r) / ((mu + r)^2)))
+    new_r = r - score / info
+    return new_r
+
+
 def _kl_divergence(X, W, H, S=None):
     """Kullback-Leibler divergence for X ~ WH.
 
@@ -208,6 +233,16 @@ def _nb_p(mu, r):
     """
     p = 1 - r / (r + mu)  # p has the same shape as mu.
     return p
+
+
+def _nmf_mu(W, H, S=None, O=None):
+    """Helper function for computing (WH + O) * S."""
+    WHOS = np.matmul(W, H)
+    if O is not None:
+        WHOS += O
+    if S is not None:
+        WHOS *= S
+    return WHOS
 
 
 def loglik(X, X_exp, r=None):
@@ -312,7 +347,8 @@ def gof(X, X_exp, sim_count=None, random_state=None, r=None):
     return gof_pval, sample_pvals, sim_logliks
 
 
-def fit(X, k, S=None, max_iter=200, tol=1e-4, verbose=False, random_state=None):
+def fit(X, k, S=None, O=None, negbin=False, max_iter=200, tol=1e-4,
+        verbose=False, random_state=None):
     """Fit KL-NMF using multiplicative updates.
 
     Args:
@@ -321,6 +357,10 @@ def fit(X, k, S=None, max_iter=200, tol=1e-4, verbose=False, random_state=None):
         S (numpy.ndarray): A matrix of values [0, 1] of shape (M, N) indicating
             the proportion of mutations of each of the M contexts that cannot be
             observed.
+        O (numpy.ndarray): A matrix of nonnegative values of shape (M, N),
+            representing the additive offset term.
+        negbin (bool): Whether to fit a negative binomial model or a default
+            Poisson model.
         max_iter (int): Maximum number of iterations to use.
         tol (float): Relative tolerance for convergence.
         verbose (bool): Whether to print progress updates every 10 iterations.
@@ -331,11 +371,17 @@ def fit(X, k, S=None, max_iter=200, tol=1e-4, verbose=False, random_state=None):
             to column sums of 1.
         numpy.ndarray: The fitted H matrix of shape (k, N). The matrix is scaled
             correspondingly to W matrix scaling.
+        float: The overdispersion parameter r. Returns None if the Poisson model
+            was fitted.
         int: Number of iterations used.
         list: A list of errors recorded every 10 iterations.
     """
     W, H = sklearn.decomposition._nmf._initialize_nmf(
         X, k, 'random', random_state=random_state)
+    if negbin:
+        r = 10000  # Start with a relatively Poisson-like dispersion.
+    else:
+        r = None
 
     # Set up initial values.
     start_time = time.time()
@@ -343,14 +389,17 @@ def fit(X, k, S=None, max_iter=200, tol=1e-4, verbose=False, random_state=None):
     errors = []
 
     for n_iter in range(1, max_iter + 1):
-        delta_W = _mu_W(X, W, H, S)
+        delta_W = _mu_W(X, W, H, S, O, r)
         W *= delta_W
-        delta_H = _mu_H(X, W, H, S)
+        delta_H = _mu_H(X, W, H, S, O, r)
         H *= delta_H
+        mu = _nmf_mu(W, H, S, O)
+        if negbin:
+            r = _iterate_nb_theta(X, mu, r)
 
         # Test for convergence every 10 iterations.
         if n_iter % 10 == 0:
-            error = _kl_divergence(X, W, H, S)
+            error = -loglik(X, mu, r)
             errors.append(error)
             if verbose:
                 elapsed = time.time() - start_time
@@ -366,7 +415,7 @@ def fit(X, k, S=None, max_iter=200, tol=1e-4, verbose=False, random_state=None):
     W_colsums = np.sum(W, axis=0)
     W /= W_colsums[np.newaxis, :]
     H *= W_colsums[:, np.newaxis]
-    return W, H, n_iter, errors
+    return W, H, r, n_iter, errors
 
 
 def match_signatures(W1, W2):
