@@ -15,11 +15,17 @@ import time
 import nmflib.constants
 
 
-EPSILON = np.finfo(np.float32).eps
+def _ensure_pos(arr, epsilon=np.finfo(np.float32).eps):
+    """Replace zeroes in arr with epsilon in-place."""
+    sel = arr == 0.0
+    if np.any(sel):
+        arr[sel] = epsilon
 
 
-def _mu_W(X, W, H, S=None):
+def _mu_W(X, W, H, S=None, O=None, r=None):  # noqa: 471
     """Multiplicative KL-update for W.
+
+    Multiplicative update for W to maximise E[X] = (WH + O) * S.
 
     Args:
         X (numpy.ndarray): A nonnegative integer matrix of shape (M, N).
@@ -28,24 +34,58 @@ def _mu_W(X, W, H, S=None):
         S (numpy.ndarray): A matrix of values [0, 1] of shape (M, N) indicating
             the proportion of mutations of each of the M contexts that cannot be
             observed.
+        O (numpy.ndarray): A matrix of nonnegative values of shape (M, N),
+            representing the additive offset term.
+        r (float): Non-negative value that, if provided, is used as the
+            overdispersion parameter for a negative binomial NMF model.
 
     Returns:
         numpy.ndarray: The multiplicative update for W.
     """
+    # Precompute some helper variables.
+    WHO = np.matmul(W, H)
+    if O is not None:
+        WHO += O
+    if S is not None:
+        WHOS = WHO * S
+    else:
+        WHOS = WHO
+    if r is not None:
+        WHOSr = WHOS + r
+    else:
+        WHOSr = WHOS
+    _ensure_pos(WHO)
+    _ensure_pos(WHOSr)
 
     # Compute numerator.
-    numerator = np.dot(W, H)
-    numerator[numerator == 0] = EPSILON
-    np.divide(X, numerator, out=numerator)
-    numerator = np.dot(numerator, H.T)
+    if r is not None:
+        if S is not None:
+            numerator = np.matmul(np.divide(X, WHO) - np.divide(X * S, WHOSr),
+                                  H.T)
+        else:
+            numerator = np.matmul(np.divide(X, WHO) - np.divide(X, WHOSr), H.T)
+    else:
+        numerator = np.matmul(np.divide(X, WHO), H.T)
+    _ensure_pos(numerator)
 
-    # Compute denominator
-    if S is None:
+    # Compute denominator.
+    if S is None and O is None and r is None:
+        # Use shorthand for computing W column sums.
         H_sum = np.sum(H, axis=1)
         denominator = H_sum[np.newaxis, :]
+    elif r is not None:
+        if S is not None:
+            denominator = np.matmul(r * S / WHOSr, H.T)
+        else:
+            # S == 1
+            denominator = np.matmul(r / WHOSr, H.T)
     else:
-        denominator = np.dot(S, H.T)
-    denominator[denominator == 0] = EPSILON
+        # r is None, but either S or O exist, so we cannot use the shorthand.
+        if S is not None:
+            denominator = np.matmul(S / WHOSr, H.T)
+        else:
+            denominator = np.matmul(1 / WHOSr, H.T)
+    _ensure_pos(denominator)
 
     # Compute the update
     numerator /= denominator
@@ -54,8 +94,10 @@ def _mu_W(X, W, H, S=None):
     return delta_W
 
 
-def _mu_H(X, W, H, S=None):
+def _mu_H(X, W, H, S=None, O=None, r=None):  # noqa: 471
     """Multiplicative KL-update for H.
+
+    Multiplicative update for H to maximise E[X] = (WH + O) * S.
 
     Args:
         X (numpy.ndarray): A nonnegative integer matrix of shape (M, N).
@@ -64,23 +106,58 @@ def _mu_H(X, W, H, S=None):
         S (numpy.ndarray): A matrix of values [0, 1] of shape (M, N) indicating
             the proportion of mutations of each of the M contexts that cannot be
             observed.
+        O (numpy.ndarray): A matrix of nonnegative values of shape (M, N),
+            representing the additive offset term.
+        r (float): Non-negative value that, if provided, is used as the
+            overdispersion parameter for a negative binomial NMF model.
 
     Returns:
         numpy.ndarray: The multiplicative update for H.
     """
-    # Compute numerator.
-    numerator = np.dot(W, H)
-    numerator[numerator == 0] = EPSILON
-    np.divide(X, numerator, out=numerator)
-    numerator = np.dot(W.T, numerator)
+    # Precompute some helper variables.
+    WHO = np.matmul(W, H)
+    if O is not None:
+        WHO += O
+    if S is not None:
+        WHOS = WHO * S
+    else:
+        WHOS = WHO
+    if r is not None:
+        WHOSr = WHOS + r
+    else:
+        WHOSr = WHOS
+    _ensure_pos(WHO)
+    _ensure_pos(WHOSr)
 
-    # Compute denominator
-    if S is None:
+    # Compute numerator.
+    if r is not None:
+        if S is not None:
+            numerator = np.matmul(W.T,
+                                  np.divide(X, WHO) - np.divide(X * S, WHOSr))
+        else:
+            numerator = np.matmul(W.T, np.divide(X, WHO) - np.divide(X, WHOSr))
+    else:
+        numerator = np.matmul(W.T, np.divide(X, WHO))
+    _ensure_pos(numerator)
+
+    # Compute denominator.
+    if S is None and O is None and r is None:
+        # Use shorthand for computing W column sums.
         W_sum = np.sum(W, axis=0)
         denominator = W_sum[:, np.newaxis]
+    elif r is not None:
+        if S is not None:
+            denominator = np.matmul(W.T, r * S / WHOSr)
+        else:
+            # S == 1
+            denominator = np.matmul(W.T, r / WHOSr)
     else:
-        denominator = np.dot(W.T, S)
-    denominator[denominator == 0] = EPSILON
+        # r is None, but either S or O exist, so we cannot use the shorthand.
+        if S is not None:
+            denominator = np.matmul(W.T, S / WHOSr)
+        else:
+            denominator = np.matmul(W.T, 1 / WHOSr)
+    _ensure_pos(denominator)
 
     # Compute the update
     numerator /= denominator
@@ -126,23 +203,30 @@ def _kl_divergence(X, W, H, S=None):
     return res
 
 
-def loglik(X, X_exp, theta=None):
+def _nb_p(mu, r):
+    """Calculate the negative binomial p from a mean and a dispersion parameter.
+    """
+    p = 1 - r / (r + mu)  # p has the same shape as mu.
+    return p
+
+
+def loglik(X, X_exp, r=None):
     """Compute poisson or negative binomial log-likelihood.
 
     Args:
         X (numpy.ndarray): A nonnegative integer matrix of shape (M, N).
         X_exp (numpy.ndarray): A nonnegative matrix for expected values of X.
-        theta (float): If provided, then negative binomial log-likelihood is
-            computed using `theta` as the dispersion parameter.
+        r (float): If provided, then negative binomial log-likelihood is
+            computed using `r` as the dispersion parameter.
 
     Returns:
         numpy.ndarray: The log-likelihood for each element in X.
     """
-    if theta is None:
+    if r is None:
         logliks = scipy.stats.poisson.logpmf(X, X_exp)
     else:
-        p = 1 - theta / (theta + X_exp)  # p has the same shape as X.
-        logliks = scipy.stats.nbinom.logpmf(X, theta, p)
+        p = _nb_p(X_exp, r)  # p has the same shape as X_exp.
+        logliks = scipy.stats.nbinom.logpmf(X, r, p)
     return logliks
 
 
@@ -175,7 +259,7 @@ def calc_bic(loglik, k, n):
     return bic
 
 
-def gof(X, X_exp, sim_count=None, random_state=None):
+def gof(X, X_exp, sim_count=None, random_state=None, r=None):
     """Bootstrapped goodness-of-fit for count data NMF.
 
     Given that X ~ Poisson(X_exp), compute the P value for each column in X
@@ -189,6 +273,7 @@ def gof(X, X_exp, sim_count=None, random_state=None):
         sim_count (int): How many simulated instances of X should be generated?
             Default: 100.
         random_state (int): Random seed.
+        r (float): A positive dispersion parameter.
 
     Returns:
         gof_pval (float): Goodness-of-fit estimate for the entire matrix.
@@ -203,9 +288,13 @@ def gof(X, X_exp, sim_count=None, random_state=None):
         sim_count = 100
 
     # Observed log-likelihood of each sample - represented as a row vector.
-    obs_loglik_rowvec = (scipy.stats.poisson.logpmf(X, X_exp)
-                         .sum(axis=0)
-                         .reshape(1, -1))
+    if r is None:
+        # Simulate Poisson data.
+        obs_loglik_mat = scipy.stats.poisson.logpmf(X, X_exp)
+    else:
+        # Simulate negative binomial data.
+        obs_loglik_mat = scipy.stats.nbinom.logpmf(X, X_exp)
+    obs_loglik_rowvec = obs_loglik_mat.sum(axis=0).reshape(1, -1)
 
     # Simulated log-likelihood matrices.
     sim_logliks = []
