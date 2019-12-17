@@ -585,8 +585,10 @@ class SingleNMFModel:
 
         # Calculate AIC and BIC.
         fitted_loglik = np.sum(loglik(self.X, X_pred))
-        aic = calc_aic(fitted_loglik, self.rank)
-        bic = calc_bic(fitted_loglik, self.rank, np.prod(self.X.shape))
+        M, N, K = self.X.shape + (self.rank, )
+        param_count = (M - 1 + N) * K
+        aic = calc_aic(fitted_loglik, param_count)
+        bic = calc_bic(fitted_loglik, param_count, np.prod(self.X.shape))
 
         elapsed = time.time() - start_time
 
