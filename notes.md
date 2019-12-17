@@ -76,3 +76,38 @@ $$
 $$
 
 With the first and the second derivate, Newton's method can be used during iterations.
+
+## The full negative binomial model updates
+
+The model is
+
+$$
+\mathbf{X} \sim \mathbf{NB}((\mathbf{WH} + \mathbf{O}) \circ \mathbf{S}, r)
+$$
+
+Updates for $\mathbf{W}$:
+
+$$
+\mathbf{W} \leftarrow \mathbf{W} \circ
+    \frac{\left( \frac{\mathbf{X}}
+                      {\mathbf{WH + \mathbf{O}}}
+              - \frac{\mathbf{X \circ \mathbf{S}}}
+                     {(\mathbf{WH} + \mathbf{O}) \circ \mathbf{S} + r}
+              \right) \mathbf{H}^\intercal}
+         {\frac{r \mathbf{S}}
+               {(\mathbf{WH} + \mathbf{O}) \circ \mathbf{S} + r}
+              \mathbf{H}^\intercal}
+$$
+
+Equivalently, the updates for $\mathbf{H}$ are:
+
+$$
+\mathbf{H} \leftarrow \mathbf{H} \circ
+    \frac{\mathbf{W}^\intercal \left( \frac{\mathbf{X}}
+                                           {\mathbf{WH + \mathbf{O}}}
+              - \frac{\mathbf{X \circ \mathbf{S}}}
+                     {(\mathbf{WH} + \mathbf{O}) \circ \mathbf{S} + r}
+              \right)}
+         {\mathbf{W}^\intercal \frac{r \mathbf{S}}
+               {(\mathbf{WH} + \mathbf{O}) \circ \mathbf{S} + r}}
+$$
