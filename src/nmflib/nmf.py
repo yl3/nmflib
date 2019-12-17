@@ -23,7 +23,7 @@ def _ensure_pos(arr, epsilon=np.finfo(np.float32).eps):
         arr[sel] = epsilon
 
 
-def _mu_W(X, W, H, S=None, O=None, r=None):  # noqa: 471
+def _multiplicative_update_W(X, W, H, S=None, O=None, r=None):  # noqa: 471
     """Multiplicative KL-update for W.
 
     Multiplicative update for W to maximise E[X] = (WH + O) * S.
@@ -91,11 +91,12 @@ def _mu_W(X, W, H, S=None, O=None, r=None):  # noqa: 471
     # Compute the update
     numerator /= denominator
     delta_W = numerator
+    new_W = W * delta_W
 
-    return delta_W
+    return new_W
 
 
-def _mu_H(X, W, H, S=None, O=None, r=None):  # noqa: 471
+def _multiplicative_update_H(X, W, H, S=None, O=None, r=None):  # noqa: 471
     """Multiplicative KL-update for H.
 
     Multiplicative update for H to maximise E[X] = (WH + O) * S.
@@ -163,8 +164,9 @@ def _mu_H(X, W, H, S=None, O=None, r=None):  # noqa: 471
     # Compute the update
     numerator /= denominator
     delta_H = numerator
+    new_H = H * delta_H
 
-    return delta_H
+    return new_H
 
 
 def _iterate_nb_theta(X, mu, r):
@@ -184,48 +186,11 @@ def _iterate_nb_theta(X, mu, r):
 
     elems = np.prod(X.shape)
     score = (elems * (-digamma(r) + np.log(r) + 1)
-             + np.sum(digamma(X + r) - np.log(mu + r) - (X + r) / (mu + r))
+             + np.sum(digamma(X + r) - np.log(mu + r) - (X + r) / (mu + r)))
     info = (elems * (-trigamma(r) + 1 / r)
-            + np.sum(trigamma(X + r) - 2 / (mu + r) + (X + r) / ((mu + r)^2)))
+            + np.sum(trigamma(X + r) - 2 / (mu + r) + (X + r) / ((mu + r) ^ 2)))
     new_r = r - score / info
     return new_r
-
-
-def _kl_divergence(X, W, H, S=None):
-    """Kullback-Leibler divergence for X ~ WH.
-
-    Args:
-        X (numpy.ndarray): A nonnegative integer matrix of shape (M, N).
-        W (numpy.ndarray): A nonnegative matrix of shape (M, K) for current W.
-        H (numpy.ndarray): A nonnegative matrix of shape (K, N) for current H.
-        S (numpy.ndarray): A matrix of values [0, 1] of shape (M, N) indicating
-            the proportion of mutations of each of the M contexts that cannot be
-            observed.
-
-    Returns:
-        float: Total KL divergence.
-    """
-    X_exp = np.dot(W, H)
-    if S is not None:
-        X_exp *= S
-    X_exp_raveled = X_exp.ravel()
-    X_raveled = X.ravel()
-
-    # Prevent the algorithm from crashing.
-    X_not_zero = X_raveled != 0
-    X_exp_raveled = X_exp_raveled[X_not_zero]
-    X_raveled = X_raveled[X_not_zero]
-    X_exp_raveled[X_exp_raveled == 0] = EPSILON
-
-    if S is None:
-        sum_E_exp = np.dot(np.sum(W, axis=0), np.sum(H, axis=1))
-    else:
-        sum_E_exp = np.sum(X_exp)
-    div = X_raveled / X_exp_raveled
-    res = np.dot(X_raveled, np.log(div))
-    res += sum_E_exp - np.sum(X_raveled)
-
-    return res
 
 
 def _nb_p(mu, r):
@@ -235,14 +200,44 @@ def _nb_p(mu, r):
     return p
 
 
-def _nmf_mu(W, H, S=None, O=None):
-    """Helper function for computing (WH + O) * S."""
+def _nmf_mu(W, H, S=None, O=None):  # noqa: E741
+    """Helper function for computing E[X] = (WH + O) * S."""
     WHOS = np.matmul(W, H)
     if O is not None:
         WHOS += O
     if S is not None:
         WHOS *= S
     return WHOS
+
+
+def _iterate_nmf_fit(X, W, H, S=None, O=None, r=None):  # noqa: 471
+    """Perform a single iteration of W, H and r updates.
+
+    The goal is to approximate X ~ nbinom((WH + O) * S, r).
+
+    Args:
+        X (numpy.ndarray): A nonnegative integer matrix of shape (M, N).
+        W (numpy.ndarray): A nonnegative matrix of shape (M, K) for current W.
+        H (numpy.ndarray): A nonnegative matrix of shape (K, N) for current H.
+        S (numpy.ndarray): A matrix of values [0, 1] of shape (M, N) indicating
+            the proportion of mutations of each of the M contexts that cannot be
+            observed.
+        O (numpy.ndarray): A matrix of nonnegative values of shape (M, N),
+            representing the additive offset term.
+        r (float): Non-negative value that, if provided, is used as the
+            overdispersion parameter for a negative binomial NMF model.
+
+    Returns:
+        numpy.ndarray: The updated W.
+        numpy.ndarray: The updated H.
+        float: The updated r.
+    """
+    W = _multiplicative_update_W(X, W, H, S, O, r)
+    H = _multiplicative_update_H(X, W, H, S, O, r)
+    mu = _nmf_mu(W, H, S, O)
+    if r is not None:
+        r = _iterate_nb_theta(X, mu, r)
+    return W, H, r
 
 
 def loglik(X, X_exp, r=None):
@@ -335,7 +330,8 @@ def gof(X, X_exp, sim_count=None, random_state=None, r=None):
     sim_logliks = []
     for k in range(sim_count):
         sim_X = scipy.stats.poisson.rvs(X_exp)
-        sim_logliks.append(scipy.stats.poisson.logpmf(sim_X, X_exp).sum(axis=0))
+        sim_logliks.append(scipy.stats.poisson.logpmf(
+            sim_X, X_exp).sum(axis=0))
     sim_logliks = np.array(sim_logliks)
 
     # Calculate empirical P values for row sample.
@@ -347,8 +343,8 @@ def gof(X, X_exp, sim_count=None, random_state=None, r=None):
     return gof_pval, sample_pvals, sim_logliks
 
 
-def fit(X, k, S=None, O=None, negbin=False, max_iter=200, tol=1e-4,
-        verbose=False, random_state=None):
+def fit(X, k, S=None, O=None, nbinom=False, max_iter=200,  # noqa: E741
+        tol=1e-4, verbose=False, random_state=None):
     """Fit KL-NMF using multiplicative updates.
 
     Args:
@@ -359,7 +355,7 @@ def fit(X, k, S=None, O=None, negbin=False, max_iter=200, tol=1e-4,
             observed.
         O (numpy.ndarray): A matrix of nonnegative values of shape (M, N),
             representing the additive offset term.
-        negbin (bool): Whether to fit a negative binomial model or a default
+        nbinom (bool): Whether to fit a negative binomial model or a default
             Poisson model.
         max_iter (int): Maximum number of iterations to use.
         tol (float): Relative tolerance for convergence.
@@ -378,7 +374,7 @@ def fit(X, k, S=None, O=None, negbin=False, max_iter=200, tol=1e-4,
     """
     W, H = sklearn.decomposition._nmf._initialize_nmf(
         X, k, 'random', random_state=random_state)
-    if negbin:
+    if nbinom:
         r = 10000  # Start with a relatively Poisson-like dispersion.
     else:
         r = None
@@ -389,17 +385,12 @@ def fit(X, k, S=None, O=None, negbin=False, max_iter=200, tol=1e-4,
     errors = []
 
     for n_iter in range(1, max_iter + 1):
-        delta_W = _mu_W(X, W, H, S, O, r)
-        W *= delta_W
-        delta_H = _mu_H(X, W, H, S, O, r)
-        H *= delta_H
-        mu = _nmf_mu(W, H, S, O)
-        if negbin:
-            r = _iterate_nb_theta(X, mu, r)
+        W, H, r = _iterate_nmf_fit(X, W, H, S, O, r)
+        X_exp = _nmf_mu(W, H, S, O)
 
         # Test for convergence every 10 iterations.
         if n_iter % 10 == 0:
-            error = -loglik(X, mu, r)
+            error = -np.sum(loglik(X, X_exp, r))
             errors.append(error)
             if verbose:
                 elapsed = time.time() - start_time
@@ -523,6 +514,10 @@ class SingleNMFModel:
         S (numpy.ndarray): A matrix of values [0, 1] of shape (M, N) indicating
             the proportion of mutations of each of the M contexts that cannot be
             observed. See also :func:`nmflib.nmf.context_rate_matrix`.
+        O (numpy.ndarray): A matrix of nonnegative values of shape (M, N),
+            representing the additive offset term.
+        nbinom (bool): Whether to fit a negative binomial model or a default
+            Poisson model.
         random_inits (int): Number of random initialisations per rank to fit.
             The best fit of each random initialisation is kept.
         gof_sim_count (int): Number of simulations for the goodness-of-fit
@@ -535,22 +530,30 @@ class SingleNMFModel:
         S (numpy.ndarray): A matrix of values [0, 1] of shape (M, N) indicating
             the proportion of mutations of each of the M contexts that cannot be
             observed. See also :func:`nmflib.nmf.context_rate_matrix`.
+        O (numpy.ndarray): A matrix of nonnegative values of shape (M, N),
+            representing the additive offset term.
+        nbinom (bool): Whether to fit a negative binomial model or a default
+            Poisson model.
         random_inits (int): Number of random initialisations per rank to fit.
             The best fit of each random initialisation is kept.
         gof_sim_count (int): Number of simulations for the goodness-of-fit
             computation.
-        fitted (dict): A dictionary of keys ('W', 'H', 'gof', 'sample_gof',
-            'n_iter', 'errors') for the fitted W matrix of shape (M, k), the
-            fitted H matrix of shape (k, N), the overall simulated
+        fitted (dict): A dictionary of keys ('W', 'H', 'r', 'gof', 'sample_gof',
+            'n_iter', 'errors', 'elapsed') for the fitted W matrix of shape
+            (M, k), the fitted H matrix of shape (k, N), the overall simulated
             goodness-of-fit estimate of the model, the simulated
-            goodness-of-fit values for each sample, the number of iterations and
-            the errors, respectively.
+            goodness-of-fit values for each sample, the number of iterations,
+            the errors and the total time spent to fit all random
+            initialisations, respectively.
     """
 
-    def __init__(self, X, rank, S=None, random_inits=20, gof_sim_count=None):
+    def __init__(self, X, rank, S=None, O=None, nbinom=False,  # noqa: 471
+                 random_inits=20, gof_sim_count=None):
         self.X = X
         self.rank = rank
         self.S = S
+        self.O = O  # noqa: 471
+        self.nbinom = nbinom
         self.random_inits = random_inits
         self.gof_sim_count = gof_sim_count
         self.fitted = None
@@ -572,9 +575,10 @@ class SingleNMFModel:
         for _ in range(self.random_inits):
             if print_dots:
                 sys.stderr.write('.')
-            W, H, n_iter, errors = fit(self.X, self.rank, **kwargs)
+            W, H, r, n_iter, errors = fit(
+                self.X, self.rank, self.S, self.O, self.nbinom, **kwargs)
             if errors_best is None or errors[-1] < errors_best[-1]:
-                W_best, H_best, n_iter_best, = W, H, n_iter
+                W_best, H_best, r_best, n_iter_best = W, H, r, n_iter
                 errors_best = errors
         sys.stderr.write('\n')
 
@@ -595,6 +599,7 @@ class SingleNMFModel:
         # Save results.
         self.fitted = {'W': W_best,
                        'H': H_best,
+                       'r': r_best,
                        'gof': gof_pval,
                        'sample_gof': sample_gof_pval,
                        'n_iter': n_iter_best,
@@ -605,7 +610,10 @@ class SingleNMFModel:
 
     def __str__(self):
         M, N = self.X.shape
-        out_str = f'Poisson-NMF(M={M}, N={N}, K={self.rank})'
+        if self.nbinom is False:
+            out_str = f'Poisson-NMF(M={M}, N={N}, K={self.rank})'
+        else:
+            out_str = f'nbinom-NMF(M={M}, N={N}, K={self.rank})'
         if self.fitted is not None:
             out_str += ' *'
         return out_str
@@ -621,6 +629,10 @@ class SignaturesModel:
         S (numpy.ndarray): A matrix of values [0, 1] of shape (M, N) indicating
             the proportion of mutations of each of the M contexts that cannot be
             observed. See also :func:`nmflib.nmf.context_rate_matrix`.
+        O (numpy.ndarray): A matrix of nonnegative values of shape (M, N),
+            representing the additive offset term.
+        nbinom (bool): Whether to fit a negative binomial model or a default
+            Poisson model.
         random_inits (int): Number of random initialisations per rank to fit.
             The best fit of each random initialisation is kept.
         gof_sim_count (int): Number of simulations for the goodness-of-fit
@@ -633,6 +645,10 @@ class SignaturesModel:
         S (numpy.ndarray): A matrix of values [0, 1] of shape (M, N) indicating
             the proportion of mutations of each of the M contexts that cannot be
             observed. See also :func:`nmflib.nmf.context_rate_matrix`.
+        O (numpy.ndarray): A matrix of nonnegative values of shape (M, N),
+            representing the additive offset term.
+        nbinom (bool): Whether to fit a negative binomial model or a default
+            Poisson model.
         random_inits (int): Number of random initialisations per rank to fit.
             The best fit of each random initialisation is kept.
         gof_sim_count (int): Number of simulations for the goodness-of-fit
@@ -642,11 +658,13 @@ class SignaturesModel:
             outputs.
     """
 
-    def __init__(self, X, ranks_to_test, S=None, random_inits=20,
-                 gof_sim_count=None):
+    def __init__(self, X, ranks_to_test, S=None, O=None,  # noqa:471
+                 nbinom=False, random_inits=20, gof_sim_count=None):
         self.X = X
         self.ranks_to_test = ranks_to_test
         self.S = S
+        self.O = O  # noqa: 471
+        self.nbinom = nbinom
         self.random_inits = random_inits
         self.gof_sim_count = gof_sim_count
         self.fitted = None
@@ -660,8 +678,8 @@ class SignaturesModel:
         model_of_rank = {}
         for rank in self.ranks_to_test:
             sys.stderr.write(str(rank))
-            model_of_rank[rank] = SingleNMFModel(self.X, rank, self.S,
-                                                 self.random_inits,
+            model_of_rank[rank] = SingleNMFModel(self.X, rank, self.S, self.O,
+                                                 self.nbinom, self.random_inits,
                                                  self.gof_sim_count)
             model_of_rank[rank].fit(print_dots=True)
         model_tuples = []
@@ -669,8 +687,9 @@ class SignaturesModel:
             m = model_of_rank[rank]
             model_tuples.append((m, m.fitted['gof'], m.fitted['aic'],
                                  m.fitted['bic'], m.fitted['n_iter'],
-                                 m.fitted['errors'][-1]))
-        columns = ('nmf_model', 'gof', 'aic', 'bic', 'n_iter', 'final_error')
+                                 m.fitted['errors'][-1], m.fitted['elapsed']))
+        columns = ('nmf_model', 'gof', 'aic', 'bic', 'n_iter', 'final_error',
+                   'elapsed')
         out_df = pd.DataFrame(model_tuples, index=self.ranks_to_test,
                               columns=columns)
         self.fitted = out_df
