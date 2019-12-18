@@ -1,5 +1,7 @@
 """Test NMF code."""
 
+import pytest
+
 import logging
 import numpy as np
 import pandas as pd
@@ -16,16 +18,10 @@ class SimpleNMFData:
     The first signature only creates mutations in the first two channels. The
     second signature creates mutations in all channels.
     """
-    X = np.array([[15, 40, 12, 85],
-                  [15, 20, 0,  25],
-                  [0,  10, 6,  30],
-                  [0,  20, 12, 60]])
-    W_true = np.array([[.5, 0.4],
-                       [.5, 0],
-                       [0,  0.2],
-                       [0,  0.4]])
-    H_true = np.array([[30, 40, 0,  50],
-                       [0,  50, 30, 150]])
+    X = np.array([[15, 40, 12, 85], [15, 20, 0, 25], [0, 10, 6, 30],
+                  [0, 20, 12, 60]])
+    W_true = np.array([[.5, 0.4], [.5, 0], [0, 0.2], [0, 0.4]])
+    H_true = np.array([[30, 40, 0, 50], [0, 50, 30, 150]])
 
     @classmethod
     def check_answer(cls, W, H):
@@ -53,23 +49,66 @@ class ScaledNMFData(SimpleNMFData):
     the possible mutations can be observed. Overall counts are however adjusted
     to match that of SimpleNMFData.
     """
-    S = np.array([[1, 1, 0.5, 0.25],
-                  [1, 1, 0.5, 0.25],
-                  [1, 1, 0.5, 0.25],
+    S = np.array([[1, 1, 0.5, 0.25], [1, 1, 0.5, 0.25], [1, 1, 0.5, 0.25],
                   [1, 1, 0.5, 0.25]])
-    H_true = np.array([[30, 40, 0,  200],
-                       [0,  50, 60, 600]])
+    H_true = np.array([[30, 40, 0, 200], [0, 50, 60, 600]])
+
+
+class SyntheticPCAWG():
+    """Synthetic mutational signature convolutions from PCAWG.
+
+    Offsets and scales are simulated.
+
+    Args:
+        random_state (int): Random state for simulating counts. Default: 0.
+    """
+
+    def __init__(self, random_state=0):
+        self.random_state = random_state
+        self._load_syn_data()
+
+    def simulate(self, S=1, O=0, r=None):  # noqa: 741
+        """Simulate Poisson or nbinom (when r is provided) counts."""
+        np.random.seed(self.random_state)
+        if r is None:
+            rvs = scipy.stats.poisson.rvs(self.X_exp)
+        else:
+            p = nmflib.nmf._nb_p(self.X_exp, r)
+            rvs = scipy.stats.nbinom.rvs(r, p)
+        return rvs
+
+    @pytest.mark.datafiles('test_data/ground.truth.syn.catalog.csv.gz',
+                           'test_data/ground.truth.syn.sigs.csv.gz',
+                           'test_data/ground.truth.syn.exposures.csv.gz')
+    def _load_syn_data(self, datadir):
+        datadir = str(datadir)
+        self.catalog = pd.DataFrame(
+            datadir + '/ground.truth.syn.catalog.csv.gz', index_col=0, header=0)
+        self.sigs = pd.DataFrame(
+            datadir + '/ground.truth.syn.sigs.csv.gz', index_col=0, header=0)
+        self.exposures = pd.DataFrame(
+            datadir + '/ground.truth.syn.exposures.csv.gz', index_col=0,
+            header=0)
+        X_exp = self.sigs.dot(self.exposures)
+        S = scipy.stats.uniform.rvs(0.05, 1, X_exp.shape, self.random_state)
+        X_exp *= S
+        offset = scipy.stats.uniform.rvs(0.5, 1, X_exp.shape, self.random_state)
+        offset *= X_exp
+        X_exp -= offset
+        self.X_exp = X_exp
+        self.S = S
+        self.offset = offset
 
 
 def test_fit_nmf(caplog):
     """Test fitting a regular NMF."""
     caplog.set_level(logging.INFO)
-    W, H, n_iter, errors = nmflib.nmf.fit(
+    W, H, r, n_iter, errors = nmflib.nmf.fit(
         SimpleNMFData.X, 2, max_iter=10000, tol=1e-10)
     SimpleNMFData.check_answer(W, H)
 
     # Test logging.
-    W, H, n_iter, errors = nmflib.nmf.fit(
+    W, H, r, n_iter, errors = nmflib.nmf.fit(
         SimpleNMFData.X, 2, max_iter=21, tol=1e-10, verbose=True)
     assert re.search(r"Iteration 10 after \S+ seconds, error: ", caplog.text)
     assert re.search(r"Iteration 20 after \S+ seconds, error: ", caplog.text)
@@ -77,8 +116,8 @@ def test_fit_nmf(caplog):
 
 def test_fit_nmf_scaled():
     """Test fitting NMF with a scaling matrix."""
-    W, H, n_iter, errors = nmflib.nmf.fit(
-        ScaledNMFData.X, 2, ScaledNMFData.S, max_iter=10000, tol=1e-10)
+    W, H, r, n_iter, errors = nmflib.nmf.fit(ScaledNMFData.X, 2,
+                                             ScaledNMFData.S, tol=1e-10)
     ScaledNMFData.check_answer(W, H)
 
 
@@ -101,20 +140,20 @@ def test_context_rate_matrix():
     assert all(scale_mat.columns == sample_names)
     scale_mat_trinucs = scale_mat.index.get_level_values(1)
     for k in [0, 2]:
-        assert all(scale_mat[sample_names[k]].values
-                   == nmflib.constants.HUMAN_GENOME_TRINUCS[scale_mat_trinucs])
+        assert all(scale_mat[sample_names[k]].values ==
+                   nmflib.constants.HUMAN_GENOME_TRINUCS[scale_mat_trinucs])
     for k in [1, 3]:
-        assert all(scale_mat[sample_names[k]].values
-                   == nmflib.constants.HUMAN_EXOME_TRINUCS[scale_mat_trinucs])
+        assert all(scale_mat[sample_names[k]].values ==
+                   nmflib.constants.HUMAN_EXOME_TRINUCS[scale_mat_trinucs])
 
     # Test relative rates
     scale_mat = nmflib.nmf.context_rate_matrix([False, True, False, True], True)
     scale_mat_trinucs = scale_mat.index.get_level_values(1)
-    gw_relative = pd.Series(
-        np.repeat(1.0, len(nmflib.constants.HUMAN_GENOME_TRINUCS)),
+    gw_relative = pd.Series(np.repeat(
+        1.0, len(nmflib.constants.HUMAN_GENOME_TRINUCS)),
         index=nmflib.constants.HUMAN_GENOME_TRINUCS.index)
-    ew_relative = (nmflib.constants.HUMAN_EXOME_TRINUCS
-                   / nmflib.constants.HUMAN_GENOME_TRINUCS)
+    ew_relative = (nmflib.constants.HUMAN_EXOME_TRINUCS /
+                   nmflib.constants.HUMAN_GENOME_TRINUCS)
     for k in [0, 2]:
         assert all(scale_mat[k].values == gw_relative[scale_mat_trinucs])
     for k in [1, 3]:
@@ -146,8 +185,9 @@ def test_nmf_gof():
     # Create 10 simulations and choose the middle one. That one should have a
     # midrange likelihood on average.
     sim_X = [scipy.stats.poisson.rvs(X_exp, random_state=0) for k in range(11)]
-    sim_X_logliks = [np.sum(scipy.stats.poisson.logpmf(X, X_exp))
-                     for X in sim_X]
+    sim_X_logliks = [
+        np.sum(scipy.stats.poisson.logpmf(X, X_exp)) for X in sim_X
+    ]
     sim_X = list(zip(sim_X_logliks, sim_X))
     sim_X = sorted(sim_X, key=lambda x: x[0])
     pval, _, _ = nmflib.nmf.gof(sim_X[5][1], X_exp, random_state=0)
@@ -160,11 +200,9 @@ def test_signatures_model():
     sim_X = scipy.stats.poisson.rvs(X_exp, random_state=0)
     sig_models = nmflib.nmf.SignaturesModel(sim_X, [1, 2, 3])
     sig_models.fit()
-    assert (sig_models.fitted.loc[2, 'gof']
-            > sig_models.fitted.loc[1, 'gof'])
-    assert (sig_models.fitted.loc[2, 'gof']
-            > sig_models.fitted.loc[3, 'gof'])
+    assert (sig_models.fitted.loc[2, 'gof'] > sig_models.fitted.loc[1, 'gof'])
+    assert (sig_models.fitted.loc[2, 'gof'] > sig_models.fitted.loc[3, 'gof'])
 
     # Explicitly check SingleNMFModel.__str__().
-    assert (sig_models.fitted.loc[1, 'nmf_model'].__str__()
-            == 'Poisson-NMF(M=4, N=4, K=1) *')
+    assert (sig_models.fitted.loc[1, 'nmf_model'].__str__() ==
+            'Poisson-NMF(M=4, N=4, K=1) *')

@@ -19,8 +19,7 @@ import nmflib.constants
 def _ensure_pos(arr, epsilon=np.finfo(np.float32).eps):
     """Replace zeroes in arr with epsilon in-place."""
     sel = arr == 0.0
-    if np.any(sel):
-        arr[sel] = epsilon
+    arr[sel] = epsilon
 
 
 def _multiplicative_update_W(X, W, H, S=None, O=None, r=None):  # noqa: 471
@@ -56,36 +55,28 @@ def _multiplicative_update_W(X, W, H, S=None, O=None, r=None):  # noqa: 471
     else:
         WHOSr = WHOS
     _ensure_pos(WHO)
+    _ensure_pos(WHOS)
     _ensure_pos(WHOSr)
 
     # Compute numerator.
     if r is not None:
-        if S is not None:
-            numerator = np.matmul(np.divide(X, WHO) - np.divide(X * S, WHOSr),
-                                  H.T)
-        else:
-            numerator = np.matmul(np.divide(X, WHO) - np.divide(X, WHOSr), H.T)
+        numerator = np.matmul(np.divide(X, WHO) - np.divide(X * S, WHOSr), H.T)
     else:
         numerator = np.matmul(np.divide(X, WHO), H.T)
     _ensure_pos(numerator)
 
     # Compute denominator.
-    if S is None and O is None and r is None:
+    if r is None and S is None:
         # Use shorthand for computing W column sums.
         H_sum = np.sum(H, axis=1)
         denominator = H_sum[np.newaxis, :]
-    elif r is not None:
-        if S is not None:
-            denominator = np.matmul(r * S / WHOSr, H.T)
-        else:
-            # S == 1
-            denominator = np.matmul(r / WHOSr, H.T)
+    elif r is not None and S is None:
+        denominator = np.matmul(r / WHOSr, H.T)
+    elif r is not None and S is not None:
+        denominator = np.matmul(r * S / WHOSr, H.T)
     else:
-        # r is None, but either S or O exist, so we cannot use the shorthand.
-        if S is not None:
-            denominator = np.matmul(S / WHOSr, H.T)
-        else:
-            denominator = np.matmul(1 / WHOSr, H.T)
+        # r is None and S is not None
+        denominator = np.matmul(S, H.T)
     _ensure_pos(denominator)
 
     # Compute the update
@@ -129,36 +120,28 @@ def _multiplicative_update_H(X, W, H, S=None, O=None, r=None):  # noqa: 471
     else:
         WHOSr = WHOS
     _ensure_pos(WHO)
+    _ensure_pos(WHOS)
     _ensure_pos(WHOSr)
 
     # Compute numerator.
     if r is not None:
-        if S is not None:
-            numerator = np.matmul(W.T,
-                                  np.divide(X, WHO) - np.divide(X * S, WHOSr))
-        else:
-            numerator = np.matmul(W.T, np.divide(X, WHO) - np.divide(X, WHOSr))
+        numerator = np.matmul(W.T, np.divide(X, WHO) - np.divide(X * S, WHOSr))
     else:
         numerator = np.matmul(W.T, np.divide(X, WHO))
     _ensure_pos(numerator)
 
     # Compute denominator.
-    if S is None and O is None and r is None:
+    if r is None and S is None:
         # Use shorthand for computing W column sums.
         W_sum = np.sum(W, axis=0)
         denominator = W_sum[:, np.newaxis]
-    elif r is not None:
-        if S is not None:
-            denominator = np.matmul(W.T, r * S / WHOSr)
-        else:
-            # S == 1
-            denominator = np.matmul(W.T, r / WHOSr)
+    elif r is not None and S is None:
+        denominator = np.matmul(W.T, r / WHOSr)
+    elif r is not None and S is not None:
+        denominator = np.matmul(W.T, r * S / WHOSr)
     else:
-        # r is None, but either S or O exist, so we cannot use the shorthand.
-        if S is not None:
-            denominator = np.matmul(W.T, S / WHOSr)
-        else:
-            denominator = np.matmul(W.T, 1 / WHOSr)
+        # r is None and S is not None
+        denominator = np.matmul(W.T, S)
     _ensure_pos(denominator)
 
     # Compute the update
