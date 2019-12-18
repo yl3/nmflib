@@ -22,7 +22,7 @@ def _ensure_pos(arr, epsilon=np.finfo(np.float32).eps):
     arr[sel] = epsilon
 
 
-def _multiplicative_update_W(X, W, H, S=None, O=None, r=None):  # noqa: 471
+def _multiplicative_update_W(X, W, H, S=None, O=None, r=None):  # noqa: E741
     """Multiplicative KL-update for W.
 
     Multiplicative update for W to maximise E[X] = (WH + O) * S.

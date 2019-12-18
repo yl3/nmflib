@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import re
 import scipy.stats
+import sklearn.decomposition._nmf
 
 import nmflib.constants
 import nmflib.nmf
@@ -63,41 +64,42 @@ class SyntheticPCAWG():
         random_state (int): Random state for simulating counts. Default: 0.
     """
 
-    def __init__(self, random_state=0):
+    def __init__(self, datadir, r=None, random_state=0):
+        self.r = r
         self.random_state = random_state
-        self._load_syn_data()
+        self._load_syn_data(datadir)
 
-    def simulate(self, S=1, O=0, r=None):  # noqa: 741
+    def simulate(self):  # noqa: E741
         """Simulate Poisson or nbinom (when r is provided) counts."""
         np.random.seed(self.random_state)
-        if r is None:
+        if self.r is None:
             rvs = scipy.stats.poisson.rvs(self.X_exp)
         else:
-            p = nmflib.nmf._nb_p(self.X_exp, r)
-            rvs = scipy.stats.nbinom.rvs(r, p)
+            p = nmflib.nmf._nb_p(self.X_exp, self.r)
+            breakpoint()
+            rvs = scipy.stats.nbinom.rvs(self.r, p)
         return rvs
 
-    @pytest.mark.datafiles('test_data/ground.truth.syn.catalog.csv.gz',
-                           'test_data/ground.truth.syn.sigs.csv.gz',
-                           'test_data/ground.truth.syn.exposures.csv.gz')
     def _load_syn_data(self, datadir):
-        datadir = str(datadir)
-        self.catalog = pd.DataFrame(
+        self.catalog = pd.read_csv(
             datadir + '/ground.truth.syn.catalog.csv.gz', index_col=0, header=0)
-        self.sigs = pd.DataFrame(
-            datadir + '/ground.truth.syn.sigs.csv.gz', index_col=0, header=0)
-        self.exposures = pd.DataFrame(
+        self.sigs = pd.read_csv(
+            datadir + '/ground.truth.syn.sigs.csv.gz', index_col=[0, 1],
+            header=0)
+        self.exposures = pd.read_csv(
             datadir + '/ground.truth.syn.exposures.csv.gz', index_col=0,
             header=0)
         X_exp = self.sigs.dot(self.exposures)
-        S = scipy.stats.uniform.rvs(0.05, 1, X_exp.shape, self.random_state)
+        S = scipy.stats.uniform.rvs(0.05, 1, X_exp.shape,
+                                    random_state=self.random_state)
         X_exp *= S
-        offset = scipy.stats.uniform.rvs(0.5, 1, X_exp.shape, self.random_state)
-        offset *= X_exp
-        X_exp -= offset
+        O = scipy.stats.uniform.rvs(0.5, 1, X_exp.shape,  # noqa: E741
+                                    random_state=self.random_state)
+        O *= X_exp  # noqa: E741
+        X_exp -= O
         self.X_exp = X_exp
         self.S = S
-        self.offset = offset
+        self.O = O  # noqa: E741
 
 
 def test_fit_nmf(caplog):
@@ -119,6 +121,51 @@ def test_fit_nmf_scaled():
     W, H, r, n_iter, errors = nmflib.nmf.fit(ScaledNMFData.X, 2,
                                              ScaledNMFData.S, tol=1e-10)
     ScaledNMFData.check_answer(W, H)
+
+
+@pytest.mark.datafiles('test_data/ground.truth.syn.catalog.csv.gz',
+                       'test_data/ground.truth.syn.sigs.csv.gz',
+                       'test_data/ground.truth.syn.exposures.csv.gz')
+def test_fit_nmf_monotonicity(datafiles):
+    """Make sure that each update step is monotonous."""
+    datafiles = str(datafiles)
+    r = 10
+    synthetic_pcawg_data = SyntheticPCAWG(datafiles, r)
+
+    # Test the monotonicity of overall errors.
+    X_obs = synthetic_pcawg_data.simulate()
+    target_rank = 20
+    W, H, r, n_iter, errors = nmflib.nmf.fit(X_obs, target_rank,
+                                             synthetic_pcawg_data.S,
+                                             synthetic_pcawg_data.O,
+                                             nbinom=True)
+    for i in range(len(errors-1)):
+        assert errors[i] >= errors[i + 1]
+
+    # Run 10 iterations and make sure each individual update is monotonous.
+    W, H = sklearn.decomposition._nmf._initialize_nmf(
+        X_obs, target_rank, 'random',
+        random_state=synthetic_pcawg_data.random_state)
+    error = prev_error = np.sum(nmflib.nmf.loglik(X_obs, np.matmul(W, H), r))
+    for _ in range(10):
+        W = nmflib.nmf._multiplicative_update_W(
+            X_obs, W, H, synthetic_pcawg_data.S, synthetic_pcawg_data.O, r=r)
+        error = np.sum(nmflib.nmf.loglik(X_obs, np.matmul(W, H), r))
+        assert error < prev_error
+        prev_error = error
+
+        H = nmflib.nmf._multiplicative_update_H(
+            X_obs, W, H, synthetic_pcawg_data.S, synthetic_pcawg_data.O, r=r)
+        error = np.sum(nmflib.nmf.loglik(X_obs, np.matmul(W, H), r))
+        assert error < prev_error
+        prev_error = error
+
+        X_exp = nmflib.nmf._nmf_mu(W, H, synthetic_pcawg_data.S,
+                                   synthetic_pcawg_data.O)
+        r = nmflib.nmf._iterate_nb_theta(X_obs, X_exp, r)
+        error = np.sum(nmflib.nmf.loglik(X_obs, np.matmul(W, H), r))
+        assert error < prev_error
+        prev_error = error
 
 
 def test_match_signatures():
