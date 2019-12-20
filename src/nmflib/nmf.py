@@ -22,6 +22,18 @@ def _ensure_pos(arr, epsilon=np.finfo(np.float32).eps):
     arr[sel] = epsilon
 
 
+def _validate_is_ndarray(arr):
+    """Return a numpy.ndarray version of the array."""
+    if arr is None:
+        return None
+    elif isinstance(arr, pd.DataFrame):
+        return arr.values
+    elif isinstance(arr, np.ndarray):
+        return arr
+    else:
+        raise ValueError('Expected numpy.ndarray or pandas.DataFrame as type.')
+
+
 def _multiplicative_update_W(X, W, H, S=None, O=None, r=None):  # noqa: E741
     """Multiplicative KL-update for W.
 
@@ -152,6 +164,11 @@ def _multiplicative_update_H(X, W, H, S=None, O=None, r=None):  # noqa: 471
     return new_H
 
 
+def _initialise_r():
+    """Initialise the overdispersion parameter..."""
+    return 10000
+
+
 def _iterate_nb_theta(X, mu, r):
     """Use Newton's method to iterate negative binomial dispersion parameter.
 
@@ -164,6 +181,7 @@ def _iterate_nb_theta(X, mu, r):
     Returns:
         float: The next iterated value of r.
     """
+
     def trigamma(x):
         return polygamma(1, x)
 
@@ -171,7 +189,7 @@ def _iterate_nb_theta(X, mu, r):
     score = (elems * (-digamma(r) + np.log(r) + 1)
              + np.sum(digamma(X + r) - np.log(mu + r) - (X + r) / (mu + r)))
     info = (elems * (-trigamma(r) + 1 / r)
-            + np.sum(trigamma(X + r) - 2 / (mu + r) + (X + r) / ((mu + r) ^ 2)))
+            + np.sum(trigamma(X + r) - 2 / (mu + r) + (X + r) / ((mu + r)**2)))
     new_r = r - score / info
     return new_r
 
@@ -179,7 +197,10 @@ def _iterate_nb_theta(X, mu, r):
 def _nb_p(mu, r):
     """Calculate the negative binomial p from a mean and a dispersion parameter.
     """
-    p = 1 - r / (r + mu)  # p has the same shape as mu.
+    # p has the same shape as mu.
+    # We need to do subtrace the value from 1, since Wikipedia counts number of
+    # successes, but scipy counts number of failures.
+    p = 1 - mu / (r + mu)
     return p
 
 
@@ -355,6 +376,9 @@ def fit(X, k, S=None, O=None, nbinom=False, max_iter=200,  # noqa: E741
         int: Number of iterations used.
         list: A list of errors recorded every 10 iterations.
     """
+    X = _validate_is_ndarray(X)
+    S = _validate_is_ndarray(S)
+    O = _validate_is_ndarray(O)  # noqa: E741
     W, H = sklearn.decomposition._nmf._initialize_nmf(
         X, k, 'random', random_state=random_state)
     if nbinom:
