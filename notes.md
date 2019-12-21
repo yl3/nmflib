@@ -111,3 +111,26 @@ $$
          {\mathbf{W}^\intercal \frac{r \mathbf{S}}
                {(\mathbf{WH} + \mathbf{O}) \circ \mathbf{S} + r}}
 $$
+
+## Comparison of negative binomial formulations
+
+Source | $\Pr(X)$ | Interpretation of $x$ | Interpretation of $p$ | Symbol of $x$ in source
+-------|----------|-------------------------|-----------|---
+[Wikipedia](https://en.wikipedia.org/wiki/Negative_binomial_distribution) | $\frac{\Gamma(x + r)}{x! \Gamma(r)} (1 - p)^r p^x$ | Number of **successes** before $r$ failures | $\Pr(\text{Success})$ | $k$
+[Wikipedia alternative formulation](https://en.wikipedia.org/wiki/Negative_binomial_distribution#Alternative_formulations) | $\frac{\Gamma(x + k)}{x! \Gamma(k)} (1 - p)^x p^k$ | Number of **failures** given $k$ successes | $\Pr(\text{Success})$ | $r$
+[R](https://stat.ethz.ch/R-manual/R-devel/library/stats/html/NegBinomial.html) | $\frac{\Gamma(x + n)}{x! \Gamma(n)} (1 - p)^x p^n$ | Number of **failures** before $n$ successes. | $\Pr(\text{Success})$ | $x$
+[`scipy`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.nbinom.html) | $\frac{\Gamma(x + n)}{x! \Gamma(n)} (1 - p)^x p^n$ | Number of **failures** before n successes. | $\Pr(\text{Success})$ | $k$
+
+It was confirmed empirically that the R and scipy formulations are the same.
+
+    # In R
+    > dnbinom(1:3, 2, 0.25)
+    [1] 0.0937500 0.1054687 0.105468
+    
+    # In Python
+    In [1]: import scipy.stats                                                                                                                                                                                
+    scipy.stats.nbinom.
+    In [2]: scipy.stats.nbinom.pmf([1, 2, 3], 2, 0.25)                                                                                                                                                        
+    Out[2]: array([0.09375   , 0.10546875, 0.10546875])
+
+The only way the formulations differ is that the success and failure probabilities are flipped. Thus, we just need to flip the probability when we use the Scipy function.
