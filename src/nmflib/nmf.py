@@ -1,7 +1,6 @@
 """Nonnegative matrix factorisation code for count data."""
 # Copyright (C) 2019 Yilong Li (yilong.li.yl3@gmail.com) - All Rights Reserved
 
-
 import numpy as np
 import pandas as pd
 import scipy.optimize
@@ -72,7 +71,11 @@ def _multiplicative_update_W(X, W, H, S=None, O=None, r=None):  # noqa: E741
 
     # Compute numerator.
     if r is not None:
-        numerator = np.matmul(np.divide(X, WHO) - np.divide(X * S, WHOSr), H.T)
+        if S is not None:
+            numerator = np.matmul(
+                np.divide(X, WHO) - np.divide(X * S, WHOSr), H.T)
+        else:
+            numerator = np.matmul(np.divide(X, WHO) - np.divide(X, WHOSr), H.T)
     else:
         numerator = np.matmul(np.divide(X, WHO), H.T)
     _ensure_pos(numerator)
@@ -137,7 +140,11 @@ def _multiplicative_update_H(X, W, H, S=None, O=None, r=None):  # noqa: 471
 
     # Compute numerator.
     if r is not None:
-        numerator = np.matmul(W.T, np.divide(X, WHO) - np.divide(X * S, WHOSr))
+        if S is not None:
+            numerator = np.matmul(W.T,
+                                  np.divide(X, WHO) - np.divide(X * S, WHOSr))
+        else:
+            numerator = np.matmul(W.T, np.divide(X, WHO) - np.divide(X, WHOSr))
     else:
         numerator = np.matmul(W.T, np.divide(X, WHO))
     _ensure_pos(numerator)
@@ -167,15 +174,15 @@ def _multiplicative_update_H(X, W, H, S=None, O=None, r=None):  # noqa: 471
 def _initialise_nb_r(X, mu):
     """Method of moment initialisation of the nbinom dispersion parameter."""
     numerator = np.sum(X.shape)
-    denominator = np.sum((X / mu - 1) ** 2)
+    denominator = np.sum((X / mu - 1)**2)
     return numerator / denominator
 
 
 def _nb_r_score(r, X, mu):
     """Score function for the negative binomial theta parameter."""
     elems = np.prod(X.shape)
-    score = (elems * (-digamma(r) + np.log(r) + 1)
-             + np.sum(digamma(X + r) - np.log(mu + r) - (X + r) / (mu + r)))
+    score = (elems * (-digamma(r) + np.log(r) + 1) +
+             np.sum(digamma(X + r) - np.log(mu + r) - (X + r) / (mu + r)))
     return score
 
 
@@ -185,8 +192,8 @@ def _nb_r_info(r, X, mu):
         return polygamma(1, x)
 
     elems = np.prod(X.shape)
-    info = (elems * (-trigamma(r) + 1 / r)
-            + np.sum(trigamma(X + r) - 2 / (mu + r) + (X + r) / ((mu + r)**2)))
+    info = (elems * (-trigamma(r) + 1 / r) +
+            np.sum(trigamma(X + r) - 2 / (mu + r) + (X + r) / ((mu + r)**2)))
     # For numerical stability
     if info > 0:
         logging.warning('Got info > 0. Replacing with info <- -info.')
@@ -236,8 +243,14 @@ def _nmf_mu(W, H, S=None, O=None):  # noqa: E741
     return WHOS
 
 
-def _iterate_nmf_fit(X, W, H, S=None, O=None, r=None,  # noqa: 471
-                     r_fit_method=None):
+def _iterate_nmf_fit(
+        X,
+        W,
+        H,
+        S=None,
+        O=None,  # noqa: 471
+        r=None,
+        r_fit_method=None):
     """Perform a single iteration of W, H and r updates.
 
     The goal is to approximate X ~ nbinom((WH + O) * S, r).
@@ -283,7 +296,7 @@ def fit_nbinom_r_mm(X, mu, dof, reltol=0.001):
     iter = 0
     while True:
         iter += 1
-        numerator = np.sum((X - mu)**2 / (mu + mu**2/prev_r)) - dof
+        numerator = np.sum((X - mu)**2 / (mu + mu**2 / prev_r)) - dof
         denominator = np.sum((X - mu)**2 / (mu + prev_r)**2)
         delta = numerator / denominator
         r = prev_r - delta
@@ -379,9 +392,11 @@ def gof(X, X_exp, sim_count=None, random_state=None, r=None):
         sim_count (int): How many simulated instances of X should be generated?
             Default: 100.
         random_state (int): Random seed.
-        r (float): A positive dispersion parameter.
+        r (float): A positive dispersion parameter. If None, then a Poisson
+            model is assumed.
 
     Returns:
+        gof_D (float): KS test statistic.
         gof_pval (float): Goodness-of-fit estimate for the entire matrix.
         gof_data (numpy.ndarray): Goodness-of-fit p-values for each sample
             (i.e. column of X) individually.
@@ -400,9 +415,16 @@ def gof(X, X_exp, sim_count=None, random_state=None, r=None):
     # Simulated log-likelihood matrices.
     sim_logliks = []
     for k in range(sim_count):
-        sim_X = scipy.stats.poisson.rvs(X_exp)
-        sim_logliks.append(scipy.stats.poisson.logpmf(
-            sim_X, X_exp).sum(axis=0))
+        if r is None:
+            sim_X = scipy.stats.poisson.rvs(X_exp)
+            sim_logliks.append(
+                scipy.stats.poisson.logpmf(sim_X, X_exp).sum(axis=0))
+        else:
+            p = _nb_p(X_exp, r)
+            sim_X = scipy.stats.nbinom.rvs(r, p, size=X.shape)
+            sim_logliks.append(
+                scipy.stats.nbinom.logpmf(sim_X, r, p).sum(axis=0))
+
     sim_logliks = np.array(sim_logliks)
 
     # Calculate empirical P values for row sample.
@@ -411,11 +433,19 @@ def gof(X, X_exp, sim_count=None, random_state=None, r=None):
 
     # Calculate overall goodness-of-fit P value.
     gof_D, gof_pval = scipy.stats.kstest(sample_pvals, 'uniform')
-    return gof_pval, sample_pvals, sim_logliks
+    return gof_D, gof_pval, sample_pvals, sim_logliks
 
 
-def fit(X, k, S=None, O=None, nbinom_fit=False, max_iter=200,  # noqa: E741
-        tol=1e-4, verbose=False, random_state=None):
+def fit(
+        X,
+        k,
+        S=None,
+        O=None,  # noqa: E741
+        nbinom_fit=False,
+        max_iter=200,
+        tol=1e-4,
+        verbose=False,
+        random_state=None):
     """Fit KL-NMF using multiplicative updates.
 
     Args:
@@ -446,8 +476,10 @@ def fit(X, k, S=None, O=None, nbinom_fit=False, max_iter=200,  # noqa: E741
     X = _validate_is_ndarray(X)
     S = _validate_is_ndarray(S)
     O = _validate_is_ndarray(O)  # noqa: E741
-    W, H = sklearn.decomposition._nmf._initialize_nmf(
-        X, k, 'random', random_state=random_state)
+    W, H = sklearn.decomposition._nmf._initialize_nmf(X,
+                                                      k,
+                                                      'random',
+                                                      random_state=random_state)
     r = None  # First iteration is fitted with Poissonian overdispersion.
 
     # Set up initial values.
@@ -470,10 +502,9 @@ def fit(X, k, S=None, O=None, nbinom_fit=False, max_iter=200,  # noqa: E741
             errors.append(error)
             if verbose:
                 elapsed = time.time() - start_time
-                logging.info("Iteration {} after {:.3f} seconds, error: {}"
-                             .format(n_iter, elapsed, error))
-                print("Iteration {} after {:.3f} seconds, error: {}"
-                      .format(n_iter, elapsed, error))
+                logging.info(
+                    "Iteration {} after {:.3f} seconds, error: {}".format(
+                        n_iter, elapsed, error))
             if error_at_init is None:
                 error_at_init = error
             elif (previous_error - error) / error_at_init < tol:
@@ -496,10 +527,9 @@ def fit(X, k, S=None, O=None, nbinom_fit=False, max_iter=200,  # noqa: E741
                 errors.append(error)
                 if verbose:
                     elapsed = time.time() - start_time
-                    logging.info("Iteration {} after {:.3f} seconds, error: {}"
-                                 .format(n_iter, elapsed, error))
-                    print("Iteration {} after {:.3f} seconds, error: {}"
-                          .format(n_iter, elapsed, error))
+                    logging.info(
+                        "Iteration {} after {:.3f} seconds, error: {}".format(
+                            n_iter, elapsed, error))
                 if (previous_error - error) / error_at_init < tol:
                     break
                 previous_error = error
@@ -555,14 +585,16 @@ def mut_context_df(relative=True):
     if relative:
         gw_rates = pd.Series([1.0] * len(nmflib.constants.HUMAN_GENOME_TRINUCS),
                              index=nmflib.constants.HUMAN_GENOME_TRINUCS.index)
-        ew_rates = pd.Series(nmflib.constants.HUMAN_EXOME_TRINUCS
-                             / nmflib.constants.HUMAN_GENOME_TRINUCS)
+        ew_rates = pd.Series(nmflib.constants.HUMAN_EXOME_TRINUCS /
+                             nmflib.constants.HUMAN_GENOME_TRINUCS)
     else:
         gw_rates = nmflib.constants.HUMAN_GENOME_TRINUCS
         ew_rates = nmflib.constants.HUMAN_EXOME_TRINUCS
-    mut_context_types = mut_context_types.merge(gw_rates.to_frame(), left_on=1,
+    mut_context_types = mut_context_types.merge(gw_rates.to_frame(),
+                                                left_on=1,
                                                 right_index=True)
-    mut_context_types = mut_context_types.merge(ew_rates.to_frame(), left_on=1,
+    mut_context_types = mut_context_types.merge(ew_rates.to_frame(),
+                                                left_on=1,
                                                 right_index=True)
 
     # After merging the counts, drop the first two columns that correspond to
@@ -595,9 +627,10 @@ def context_rate_matrix(sample_is_exome, relative=True):
             the relative or absolute opportunities).
     """
     context_counts = mut_context_df(relative)
-    counts_to_use = [context_counts['ew_rate']
-                     if x else context_counts['gw_rate']
-                     for x in sample_is_exome]
+    counts_to_use = [
+        context_counts['ew_rate'] if x else context_counts['gw_rate']
+        for x in sample_is_exome
+    ]
     scale_mat = pd.DataFrame(counts_to_use).T
     if isinstance(sample_is_exome, pd.Series):
         scale_mat.columns = sample_is_exome.index
@@ -648,9 +681,15 @@ class SingleNMFModel:
             the errors and the total time spent to fit all random
             initialisations, respectively.
     """
-
-    def __init__(self, X, rank, S=None, O=None, nbinom=False,  # noqa: 471
-                 random_inits=20, gof_sim_count=None):
+    def __init__(
+            self,
+            X,
+            rank,
+            S=None,
+            O=None,  # noqa: 471
+            nbinom=False,
+            random_inits=20,
+            gof_sim_count=None):
         self.X = X
         self.rank = rank
         self.S = S
@@ -677,38 +716,45 @@ class SingleNMFModel:
         for _ in range(self.random_inits):
             if print_dots:
                 sys.stderr.write('.')
-            W, H, r, n_iter, errors = fit(
-                self.X, self.rank, self.S, self.O, self.nbinom, **kwargs)
+            W, H, r, n_iter, errors = fit(self.X, self.rank, self.S, self.O,
+                                          self.nbinom, **kwargs)
             if errors_best is None or errors[-1] < errors_best[-1]:
                 W_best, H_best, r_best, n_iter_best = W, H, r, n_iter
                 errors_best = errors
         sys.stderr.write('\n')
 
         # Calculate goodness-of-fit.
-        X_pred = np.matmul(W_best, H_best)
-        gof_pval, sample_gof_pval, sim_logliks = gof(self.X, X_pred,
-                                                     self.gof_sim_count)
+        X_pred = _nmf_mu(W_best, H_best, self.S, self.O)
+        gof_D, gof_pval, sample_gof_pval, sim_logliks = gof(self.X,
+                                                            X_pred,
+                                                            self.gof_sim_count,
+                                                            r=r_best)
 
         # Calculate AIC and BIC.
-        fitted_loglik = np.sum(loglik(self.X, X_pred))
+        fitted_loglik = np.sum(loglik(self.X, X_pred, r_best))
         M, N, K = self.X.shape + (self.rank, )
         param_count = (M - 1 + N) * K
+        if self.nbinom:
+            param_count += 1
         aic = calc_aic(fitted_loglik, param_count)
         bic = calc_bic(fitted_loglik, param_count, np.prod(self.X.shape))
 
         elapsed = time.time() - start_time
 
         # Save results.
-        self.fitted = {'W': W_best,
-                       'H': H_best,
-                       'r': r_best,
-                       'gof': gof_pval,
-                       'sample_gof': sample_gof_pval,
-                       'n_iter': n_iter_best,
-                       'errors': errors_best,
-                       'aic': aic,
-                       'bic': bic,
-                       'elapsed': elapsed}
+        self.fitted = {
+            'W': W_best,
+            'H': H_best,
+            'r': r_best,
+            'gof_D': gof_D,
+            'gof_pval': gof_pval,
+            'sample_gof': sample_gof_pval,
+            'n_iter': n_iter_best,
+            'errors': errors_best,
+            'aic': aic,
+            'bic': bic,
+            'elapsed': elapsed
+        }
 
     def __str__(self):
         M, N = self.X.shape
@@ -759,9 +805,15 @@ class SignaturesModel:
             tested with columns for the actual model and the model fitting
             outputs.
     """
-
-    def __init__(self, X, ranks_to_test, S=None, O=None,  # noqa:471
-                 nbinom=False, random_inits=20, gof_sim_count=None):
+    def __init__(
+            self,
+            X,
+            ranks_to_test,
+            S=None,
+            O=None,  # noqa:471
+            nbinom=False,
+            random_inits=20,
+            gof_sim_count=None):
         self.X = X
         self.ranks_to_test = ranks_to_test
         self.S = S
@@ -787,11 +839,13 @@ class SignaturesModel:
         model_tuples = []
         for rank in self.ranks_to_test:
             m = model_of_rank[rank]
-            model_tuples.append((m, m.fitted['gof'], m.fitted['aic'],
-                                 m.fitted['bic'], m.fitted['n_iter'],
-                                 m.fitted['errors'][-1], m.fitted['elapsed']))
-        columns = ('nmf_model', 'gof', 'aic', 'bic', 'n_iter', 'final_error',
-                   'elapsed')
-        out_df = pd.DataFrame(model_tuples, index=self.ranks_to_test,
+            model_tuples.append(
+                (m, m.fitted['r'], m.fitted['gof_D'], m.fitted['gof_pval'],
+                 m.fitted['aic'], m.fitted['bic'], m.fitted['n_iter'],
+                 m.fitted['errors'][-1], m.fitted['elapsed']))
+        columns = ('nmf_model', 'dispersion', 'gof_D', 'gof_pval',
+                   'aic', 'bic', 'n_iter', 'final_error', 'elapsed')
+        out_df = pd.DataFrame(model_tuples,
+                              index=self.ranks_to_test,
                               columns=columns)
         self.fitted = out_df

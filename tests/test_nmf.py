@@ -63,7 +63,6 @@ class SyntheticPCAWG():
     Args:
         random_state (int): Random state for simulating counts. Default: 0.
     """
-
     def __init__(self, datadir, r=None, random_state=0):
         self.r = r
         self.random_state = random_state
@@ -80,20 +79,27 @@ class SyntheticPCAWG():
         return rvs
 
     def _load_syn_data(self, datadir):
-        self.catalog = pd.read_csv(
-            datadir + '/ground.truth.syn.catalog.csv.gz', index_col=0, header=0)
-        self.sigs = pd.read_csv(
-            datadir + '/ground.truth.syn.sigs.csv.gz', index_col=[0, 1],
-            header=0)
-        self.exposures = pd.read_csv(
-            datadir + '/ground.truth.syn.exposures.csv.gz', index_col=0,
-            header=0)
+        self.catalog = pd.read_csv(datadir + '/ground.truth.syn.catalog.csv.gz',
+                                   index_col=0,
+                                   header=0)
+        self.sigs = pd.read_csv(datadir + '/ground.truth.syn.sigs.csv.gz',
+                                index_col=[0, 1],
+                                header=0)
+        self.exposures = pd.read_csv(datadir +
+                                     '/ground.truth.syn.exposures.csv.gz',
+                                     index_col=0,
+                                     header=0)
         X_exp = self.sigs.dot(self.exposures)
-        S = scipy.stats.uniform.rvs(0.05, 1 - 0.05, X_exp.shape,
+        S = scipy.stats.uniform.rvs(0.05,
+                                    1 - 0.05,
+                                    X_exp.shape,
                                     random_state=self.random_state)
         X_exp *= S
-        O = scipy.stats.uniform.rvs(0.5, 1 - 0.5, X_exp.shape,  # noqa: E741
-                                    random_state=self.random_state)
+        O = scipy.stats.uniform.rvs(  # noqa: E741
+            0.5,
+            1 - 0.5,
+            X_exp.shape,
+            random_state=self.random_state)
         O *= X_exp.values  # noqa: E741
         X_exp -= O
         self.X_exp = X_exp
@@ -104,21 +110,28 @@ class SyntheticPCAWG():
 def test_fit_nmf(caplog):
     """Test fitting a regular NMF."""
     caplog.set_level(logging.INFO)
-    W, H, r, n_iter, errors = nmflib.nmf.fit(
-        SimpleNMFData.X, 2, max_iter=10000, tol=1e-10)
+    W, H, r, n_iter, errors = nmflib.nmf.fit(SimpleNMFData.X,
+                                             2,
+                                             max_iter=10000,
+                                             tol=1e-10)
     SimpleNMFData.check_answer(W, H)
 
     # Test logging.
-    W, H, r, n_iter, errors = nmflib.nmf.fit(
-        SimpleNMFData.X, 2, max_iter=21, tol=1e-10, verbose=True)
+    W, H, r, n_iter, errors = nmflib.nmf.fit(SimpleNMFData.X,
+                                             2,
+                                             max_iter=21,
+                                             tol=1e-10,
+                                             verbose=True)
     assert re.search(r"Iteration 10 after \S+ seconds, error: ", caplog.text)
     assert re.search(r"Iteration 20 after \S+ seconds, error: ", caplog.text)
 
 
 def test_fit_nmf_scaled():
     """Test fitting NMF with a scaling matrix."""
-    W, H, r, n_iter, errors = nmflib.nmf.fit(ScaledNMFData.X, 2,
-                                             ScaledNMFData.S, tol=1e-10)
+    W, H, r, n_iter, errors = nmflib.nmf.fit(ScaledNMFData.X,
+                                             2,
+                                             ScaledNMFData.S,
+                                             tol=1e-10)
     ScaledNMFData.check_answer(W, H)
 
 
@@ -160,8 +173,12 @@ def test_fit_nmf_monotonicity(datafiles):
     TARGET_RANK = 20
 
     # Test the monotonicity of overall errors.
-    W, H, r, n_iter, errors = nmflib.nmf.fit(
-        X_obs, TARGET_RANK, S, O, nbinom_fit=True, verbose=True)
+    W, H, r, n_iter, errors = nmflib.nmf.fit(X_obs,
+                                             TARGET_RANK,
+                                             S,
+                                             O,
+                                             nbinom_fit=True,
+                                             verbose=True)
 
     # Skip check on iterations 1-5, which are typically fitted using method
     # of moments and are not guaranteed to increase log-likelihood.
@@ -184,7 +201,9 @@ def test_nmf_updates_monotonicity(datafiles):
 
     # Run 10 iterations and make sure each individual update is monotonous.
     W, H = sklearn.decomposition._nmf._initialize_nmf(
-        X_obs, TARGET_RANK, 'random',
+        X_obs,
+        TARGET_RANK,
+        'random',
         random_state=synthetic_pcawg_data.random_state)
     X_exp = nmflib.nmf._nmf_mu(W, H, S, O)
     r = nmflib.nmf._initialise_nb_r(X_obs, X_exp)
@@ -239,7 +258,7 @@ def test_context_rate_matrix():
     scale_mat_trinucs = scale_mat.index.get_level_values(1)
     gw_relative = pd.Series(np.repeat(
         1.0, len(nmflib.constants.HUMAN_GENOME_TRINUCS)),
-        index=nmflib.constants.HUMAN_GENOME_TRINUCS.index)
+                            index=nmflib.constants.HUMAN_GENOME_TRINUCS.index)
     ew_relative = (nmflib.constants.HUMAN_EXOME_TRINUCS /
                    nmflib.constants.HUMAN_GENOME_TRINUCS)
     for k in [0, 2]:
@@ -258,15 +277,15 @@ def test_nmf_gof():
     X = SimpleNMFData.X
     X_exp = np.matmul(SimpleNMFData.W_true, SimpleNMFData.H_true)
 
-    # Observed is expected - P value should be 0 since no simulation should get
-    # this high a likelihood.
-    pval, data, _ = nmflib.nmf.gof(X, X_exp, random_state=0)
+    # Observed is *exactly* as expected - P value should be 0 since no
+    # simulation should get this high a likelihood.
+    _, pval, data, _ = nmflib.nmf.gof(X_exp, X_exp, random_state=0)
     assert pval == 0.0
     assert np.all(np.array(data) == 1.0)
 
     # Observed is very far from expected - P value should be 0 since no
     # simulation should be always more likely than the expected value.
-    pval, data, _ = nmflib.nmf.gof(X, X_exp * 100, random_state=0)
+    _, pval, data, _ = nmflib.nmf.gof(X, X_exp * 100, random_state=0)
     assert pval == 0.0
     assert np.all(np.array(data) == 0.0)
 
@@ -278,7 +297,7 @@ def test_nmf_gof():
     ]
     sim_X = list(zip(sim_X_logliks, sim_X))
     sim_X = sorted(sim_X, key=lambda x: x[0])
-    pval, _, _ = nmflib.nmf.gof(sim_X[5][1], X_exp, random_state=0)
+    _, pval, _, _ = nmflib.nmf.gof(sim_X[5][1], X_exp, random_state=0)
     assert 0.2 <= pval <= 0.8
 
 
@@ -288,8 +307,10 @@ def test_signatures_model():
     sim_X = scipy.stats.poisson.rvs(X_exp, random_state=0)
     sig_models = nmflib.nmf.SignaturesModel(sim_X, [1, 2, 3])
     sig_models.fit()
-    assert (sig_models.fitted.loc[2, 'gof'] > sig_models.fitted.loc[1, 'gof'])
-    assert (sig_models.fitted.loc[2, 'gof'] > sig_models.fitted.loc[3, 'gof'])
+    assert (sig_models.fitted.loc[2, 'gof_pval'] >
+            sig_models.fitted.loc[1, 'gof_pval'])
+    assert (sig_models.fitted.loc[2, 'gof_pval'] >
+            sig_models.fitted.loc[3, 'gof_pval'])
 
     # Explicitly check SingleNMFModel.__str__().
     assert (sig_models.fitted.loc[1, 'nmf_model'].__str__() ==
