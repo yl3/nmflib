@@ -122,6 +122,30 @@ def test_fit_nmf_scaled():
     ScaledNMFData.check_answer(W, H)
 
 
+def test_iterate_nbinom_nmf_r_ml():
+    """Test nmf._iterate_nbinom_nmf_r_ml() using simple data."""
+    mu = 10
+    true_r = 10
+    p = nmflib.nmf._nb_p(mu, true_r)
+    np.random.seed(0)
+    x = scipy.stats.nbinom.rvs(true_r, p, size=int(1e5))
+    r = nmflib.nmf._initialise_nb_r(x, mu)
+    for _ in range(10):
+        r = nmflib.nmf._iterate_nbinom_nmf_r_ml(x, mu, r)
+    assert 9.9 < r < 10.1  # Should be ~10.0
+
+
+def test_fit_nbinom_r_mm():
+    """Test to make sure nmf.fit_nbinom_r_mm() works using simple data."""
+    mu = 20
+    true_r = 10
+    p = nmflib.nmf._nb_p(mu, true_r)
+    np.random.seed(0)
+    x = scipy.stats.nbinom.rvs(true_r, p, size=int(1e5))
+    r, _ = nmflib.nmf.fit_nbinom_r_mm(x, mu, len(x) - 1)
+    assert 9.9 < r < 10.1  # Should be ~10.00
+
+
 @pytest.mark.datafiles('test_data/ground.truth.syn.catalog.csv.gz',
                        'test_data/ground.truth.syn.sigs.csv.gz',
                        'test_data/ground.truth.syn.exposures.csv.gz')
@@ -137,33 +161,19 @@ def test_fit_nmf_monotonicity(datafiles):
 
     # Test the monotonicity of overall errors.
     W, H, r, n_iter, errors = nmflib.nmf.fit(
-        X_obs, TARGET_RANK, S, O, nbinom=True)
-    for i in range(len(errors) - 1):
+        X_obs, TARGET_RANK, S, O, nbinom_fit=True, verbose=True)
+
+    # Skip check on iterations 1-5, which are typically fitted using method
+    # of moments and are not guaranteed to increase log-likelihood.
+    for i in range(5, len(errors) - 1):
         assert errors[i + 1] <= errors[i]
-
-
-def test_iterate_nb_theta():
-    """Test to make sure nmf._iterate_nb_theta() works."""
-    mu = 10
-    true_r = 10
-    p = nmflib.nmf._nb_p(mu, true_r)
-    np.random.seed(0)
-    x = scipy.stats.nbinom.rvs(true_r, p, size=int(1e5))
-    r = 12
-    for _ in range(10):
-        r = nmflib.nmf._iterate_nb_theta(x, mu, r)
-    assert 9.9 < r < 10.1  # Should be ~10.00
-    r = 1
-    for _ in range(10):
-        r = nmflib.nmf._iterate_nb_theta(x, mu, r)
-    assert 9.9 < r < 10.1  # Should be ~10.00
 
 
 @pytest.mark.datafiles('test_data/ground.truth.syn.catalog.csv.gz',
                        'test_data/ground.truth.syn.sigs.csv.gz',
                        'test_data/ground.truth.syn.exposures.csv.gz')
 def test_nmf_updates_monotonicity(datafiles):
-    """Make sure that each update step is monotonous."""
+    """Make sure that each individual W, H and r update step is monotonous."""
     datafiles = str(datafiles)
     true_r = 10
     synthetic_pcawg_data = SyntheticPCAWG(datafiles, true_r)
@@ -176,8 +186,8 @@ def test_nmf_updates_monotonicity(datafiles):
     W, H = sklearn.decomposition._nmf._initialize_nmf(
         X_obs, TARGET_RANK, 'random',
         random_state=synthetic_pcawg_data.random_state)
-    r = nmflib.nmf._initialise_r()
     X_exp = nmflib.nmf._nmf_mu(W, H, S, O)
+    r = nmflib.nmf._initialise_nb_r(X_obs, X_exp)
     loglik = prev_loglik = np.sum(nmflib.nmf.loglik(X_obs, X_exp, r))
     for _ in range(10):
         W = nmflib.nmf._multiplicative_update_W(X_obs, W, H, S, O, r=r)
@@ -193,10 +203,8 @@ def test_nmf_updates_monotonicity(datafiles):
         prev_loglik = loglik
 
         X_exp = nmflib.nmf._nmf_mu(W, H, S, O)
-        r = nmflib.nmf._iterate_nb_theta(X_obs, X_exp, r)
+        r = nmflib.nmf._iterate_nbinom_nmf_r_ml(X_obs, X_exp, r)
         loglik = np.sum(nmflib.nmf.loglik(X_obs, X_exp, r))
-        if loglik <= prev_loglik or np.isnan(loglik):
-            breakpoint()
         assert loglik > prev_loglik
         prev_loglik = loglik
 
@@ -286,3 +294,14 @@ def test_signatures_model():
     # Explicitly check SingleNMFModel.__str__().
     assert (sig_models.fitted.loc[1, 'nmf_model'].__str__() ==
             'Poisson-NMF(M=4, N=4, K=1) *')
+
+
+def test_validate_is_ndarray():
+    """Test nmf._validate_is_ndarray()."""
+    assert nmflib.nmf._validate_is_ndarray(None) is None
+    arr = np.arange(6).reshape(3, 2)
+    df = pd.DataFrame(arr)
+    assert isinstance(nmflib.nmf._validate_is_ndarray(arr), np.ndarray)
+    assert isinstance(nmflib.nmf._validate_is_ndarray(df), np.ndarray)
+    with pytest.raises(ValueError):
+        nmflib.nmf._validate_is_ndarray("Not an array")

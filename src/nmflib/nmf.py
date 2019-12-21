@@ -164,12 +164,37 @@ def _multiplicative_update_H(X, W, H, S=None, O=None, r=None):  # noqa: 471
     return new_H
 
 
-def _initialise_r():
-    """Initialise the overdispersion parameter..."""
-    return 10000
+def _initialise_nb_r(X, mu):
+    """Method of moment initialisation of the nbinom dispersion parameter."""
+    numerator = np.sum(X.shape)
+    denominator = np.sum((X / mu - 1) ** 2)
+    return numerator / denominator
 
 
-def _iterate_nb_theta(X, mu, r):
+def _nb_r_score(r, X, mu):
+    """Score function for the negative binomial theta parameter."""
+    elems = np.prod(X.shape)
+    score = (elems * (-digamma(r) + np.log(r) + 1)
+             + np.sum(digamma(X + r) - np.log(mu + r) - (X + r) / (mu + r)))
+    return score
+
+
+def _nb_r_info(r, X, mu):
+    """Fisher information for the negative binomial theta parameter."""
+    def trigamma(x):
+        return polygamma(1, x)
+
+    elems = np.prod(X.shape)
+    info = (elems * (-trigamma(r) + 1 / r)
+            + np.sum(trigamma(X + r) - 2 / (mu + r) + (X + r) / ((mu + r)**2)))
+    # For numerical stability
+    if info > 0:
+        logging.warning('Got info > 0. Replacing with info <- -info.')
+        info = -info
+    return info
+
+
+def _iterate_nbinom_nmf_r_ml(X, mu, r):
     """Use Newton's method to iterate negative binomial dispersion parameter.
 
     Args:
@@ -182,15 +207,12 @@ def _iterate_nb_theta(X, mu, r):
         float: The next iterated value of r.
     """
 
-    def trigamma(x):
-        return polygamma(1, x)
-
-    elems = np.prod(X.shape)
-    score = (elems * (-digamma(r) + np.log(r) + 1)
-             + np.sum(digamma(X + r) - np.log(mu + r) - (X + r) / (mu + r)))
-    info = (elems * (-trigamma(r) + 1 / r)
-            + np.sum(trigamma(X + r) - 2 / (mu + r) + (X + r) / ((mu + r)**2)))
+    score = _nb_r_score(r, X, mu)
+    info = _nb_r_info(r, X, mu)
     new_r = r - score / info
+    while new_r <= 0:
+        # For numerical stability
+        new_r = r - score / info / 2
     return new_r
 
 
@@ -214,7 +236,8 @@ def _nmf_mu(W, H, S=None, O=None):  # noqa: E741
     return WHOS
 
 
-def _iterate_nmf_fit(X, W, H, S=None, O=None, r=None):  # noqa: 471
+def _iterate_nmf_fit(X, W, H, S=None, O=None, r=None,  # noqa: 471
+                     r_fit_method=None):
     """Perform a single iteration of W, H and r updates.
 
     The goal is to approximate X ~ nbinom((WH + O) * S, r).
@@ -230,18 +253,67 @@ def _iterate_nmf_fit(X, W, H, S=None, O=None, r=None):  # noqa: 471
             representing the additive offset term.
         r (float): Non-negative value that, if provided, is used as the
             overdispersion parameter for a negative binomial NMF model.
+        r_fit_method (str): Method for fitting overdispersion parameter r. If
+            None, fitting is not done. Otherwise, must either be 'ml' for
+            maximum likelihood or 'mm' for method of moments.
 
     Returns:
         numpy.ndarray: The updated W.
         numpy.ndarray: The updated H.
         float: The updated r.
     """
+    if r_fit_method not in (None, 'ml', 'mm'):
+        raise ValueError('r_fit_method must be in (None, "ml", "mm").')
     W = _multiplicative_update_W(X, W, H, S, O, r)
     H = _multiplicative_update_H(X, W, H, S, O, r)
     mu = _nmf_mu(W, H, S, O)
-    if r is not None:
-        r = _iterate_nb_theta(X, mu, r)
+    if r_fit_method == 'mm':
+        r, _ = fit_nbinom_nmf_r_mm(X, mu, W.shape[1])
+    elif r_fit_method == 'ml':
+        r, _ = fit_nbinom_nmf_r_ml(X, mu, r)
+    else:
+        # Should never get here.
+        pass
     return W, H, r
+
+
+def fit_nbinom_r_mm(X, mu, dof, reltol=0.001):
+    """Fit the negative binomial dispersion parameter via method of moments."""
+    prev_r = _initialise_nb_r(X, mu)
+    iter = 0
+    while True:
+        iter += 1
+        numerator = np.sum((X - mu)**2 / (mu + mu**2/prev_r)) - dof
+        denominator = np.sum((X - mu)**2 / (mu + prev_r)**2)
+        delta = numerator / denominator
+        r = prev_r - delta
+        if abs(r - prev_r) / prev_r < reltol:
+            break
+        prev_r = r
+    return r, iter
+
+
+def fit_nbinom_nmf_r_mm(X, mu, k, reltol=0.001):
+    """Fit the negative binomial NMF dispersion parameter via method of moments.
+    """
+    free_params = np.prod(X.shape) - k * (np.sum(X.shape) - 1)
+    r, iter = fit_nbinom_r_mm(X, mu, free_params, reltol)
+    return r, iter
+
+
+def fit_nbinom_nmf_r_ml(X, mu, r_init, reltol=0.001):
+    """
+    Fit the negative binomial NMF dispersion parameter via maximum likelihood.
+    """
+    prev_r = r_init
+    n_iter = 0
+    while True:
+        n_iter += 1
+        r = _iterate_nbinom_nmf_r_ml(X, mu, prev_r)
+        if abs(r - prev_r) / prev_r < reltol:
+            break
+        prev_r = r
+    return r, n_iter
 
 
 def loglik(X, X_exp, r=None):
@@ -322,12 +394,7 @@ def gof(X, X_exp, sim_count=None, random_state=None, r=None):
         sim_count = 100
 
     # Observed log-likelihood of each sample - represented as a row vector.
-    if r is None:
-        # Simulate Poisson data.
-        obs_loglik_mat = scipy.stats.poisson.logpmf(X, X_exp)
-    else:
-        # Simulate negative binomial data.
-        obs_loglik_mat = scipy.stats.nbinom.logpmf(X, X_exp)
+    obs_loglik_mat = loglik(X, X_exp, r)
     obs_loglik_rowvec = obs_loglik_mat.sum(axis=0).reshape(1, -1)
 
     # Simulated log-likelihood matrices.
@@ -347,7 +414,7 @@ def gof(X, X_exp, sim_count=None, random_state=None, r=None):
     return gof_pval, sample_pvals, sim_logliks
 
 
-def fit(X, k, S=None, O=None, nbinom=False, max_iter=200,  # noqa: E741
+def fit(X, k, S=None, O=None, nbinom_fit=False, max_iter=200,  # noqa: E741
         tol=1e-4, verbose=False, random_state=None):
     """Fit KL-NMF using multiplicative updates.
 
@@ -359,7 +426,7 @@ def fit(X, k, S=None, O=None, nbinom=False, max_iter=200,  # noqa: E741
             observed.
         O (numpy.ndarray): A matrix of nonnegative values of shape (M, N),
             representing the additive offset term.
-        nbinom (bool): Whether to fit a negative binomial model or a default
+        nbinom_fit (bool): Whether to fit a negative binomial model or a default
             Poisson model.
         max_iter (int): Maximum number of iterations to use.
         tol (float): Relative tolerance for convergence.
@@ -381,33 +448,61 @@ def fit(X, k, S=None, O=None, nbinom=False, max_iter=200,  # noqa: E741
     O = _validate_is_ndarray(O)  # noqa: E741
     W, H = sklearn.decomposition._nmf._initialize_nmf(
         X, k, 'random', random_state=random_state)
-    if nbinom:
-        r = 10000  # Start with a relatively Poisson-like dispersion.
-    else:
-        r = None
+    r = None  # First iteration is fitted with Poissonian overdispersion.
 
     # Set up initial values.
     start_time = time.time()
     error_at_init = previous_error = None
     errors = []
 
-    for n_iter in range(1, max_iter + 1):
-        W, H, r = _iterate_nmf_fit(X, W, H, S, O, r)
-        X_exp = _nmf_mu(W, H, S, O)
+    n_iter = 0
+    while n_iter <= max_iter:
+        if nbinom_fit:
+            W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, r_fit_method='mm')
+        else:
+            W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, r_fit_method=None)
+        n_iter += 1
 
         # Test for convergence every 10 iterations.
         if n_iter % 10 == 0:
+            X_exp = _nmf_mu(W, H, S, O)
             error = -np.sum(loglik(X, X_exp, r))
             errors.append(error)
             if verbose:
                 elapsed = time.time() - start_time
                 logging.info("Iteration {} after {:.3f} seconds, error: {}"
                              .format(n_iter, elapsed, error))
+                print("Iteration {} after {:.3f} seconds, error: {}"
+                      .format(n_iter, elapsed, error))
             if error_at_init is None:
                 error_at_init = error
             elif (previous_error - error) / error_at_init < tol:
                 break
             previous_error = error
+
+    if nbinom_fit and n_iter <= max_iter:
+        if verbose:
+            logging.info("Converged with method of moments fit. Proceeding "
+                         "with maximum likelihood.")
+
+        while n_iter <= max_iter:
+            W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, r_fit_method='ml')
+            n_iter += 1
+
+            # Test for convergence every 10 iterations.
+            if n_iter % 10 == 0:
+                X_exp = _nmf_mu(W, H, S, O)
+                error = -np.sum(loglik(X, X_exp, r))
+                errors.append(error)
+                if verbose:
+                    elapsed = time.time() - start_time
+                    logging.info("Iteration {} after {:.3f} seconds, error: {}"
+                                 .format(n_iter, elapsed, error))
+                    print("Iteration {} after {:.3f} seconds, error: {}"
+                          .format(n_iter, elapsed, error))
+                if (previous_error - error) / error_at_init < tol:
+                    break
+                previous_error = error
 
     # Scale W and H such that W columns sum to 1.
     W_colsums = np.sum(W, axis=0)
