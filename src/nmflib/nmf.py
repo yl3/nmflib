@@ -414,13 +414,14 @@ def gof(X, X_exp, sim_count=None, random_state=None, r=None):
 
     # Simulated log-likelihood matrices.
     sim_logliks = []
+    if r is not None:
+        p = _nb_p(X_exp, r)
     for k in range(sim_count):
         if r is None:
             sim_X = scipy.stats.poisson.rvs(X_exp)
             sim_logliks.append(
                 scipy.stats.poisson.logpmf(sim_X, X_exp).sum(axis=0))
         else:
-            p = _nb_p(X_exp, r)
             sim_X = scipy.stats.nbinom.rvs(r, p, size=X.shape)
             sim_logliks.append(
                 scipy.stats.nbinom.logpmf(sim_X, r, p).sum(axis=0))
@@ -511,7 +512,7 @@ def fit(
                 break
             previous_error = error
 
-    if nbinom_fit and n_iter <= max_iter:
+    if nbinom_fit and n_iter < max_iter:
         if verbose:
             logging.info("Converged with method of moments fit. Proceeding "
                          "with maximum likelihood.")
@@ -533,6 +534,9 @@ def fit(
                 if (previous_error - error) / error_at_init < tol:
                     break
                 previous_error = error
+
+    if n_iter == max_iter:
+        logging.warning("Maximum iteration reached.")
 
     # Scale W and H such that W columns sum to 1.
     W_colsums = np.sum(W, axis=0)
@@ -721,7 +725,8 @@ class SingleNMFModel:
             if errors_best is None or errors[-1] < errors_best[-1]:
                 W_best, H_best, r_best, n_iter_best = W, H, r, n_iter
                 errors_best = errors
-        sys.stderr.write('\n')
+        if print_dots:
+            sys.stderr.write('\n')  # The newline after the dots.
 
         # Calculate goodness-of-fit.
         X_pred = _nmf_mu(W_best, H_best, self.S, self.O)
@@ -835,7 +840,7 @@ class SignaturesModel:
             model_of_rank[rank] = SingleNMFModel(self.X, rank, self.S, self.O,
                                                  self.nbinom, self.random_inits,
                                                  self.gof_sim_count)
-            model_of_rank[rank].fit(print_dots=True)
+            model_of_rank[rank].fit(print_dots=True, **kwargs)
         model_tuples = []
         for rank in self.ranks_to_test:
             m = model_of_rank[rank]
@@ -843,8 +848,8 @@ class SignaturesModel:
                 (m, m.fitted['r'], m.fitted['gof_D'], m.fitted['gof_pval'],
                  m.fitted['aic'], m.fitted['bic'], m.fitted['n_iter'],
                  m.fitted['errors'][-1], m.fitted['elapsed']))
-        columns = ('nmf_model', 'dispersion', 'gof_D', 'gof_pval',
-                   'aic', 'bic', 'n_iter', 'final_error', 'elapsed')
+        columns = ('nmf_model', 'dispersion', 'gof_D', 'gof_pval', 'aic', 'bic',
+                   'n_iter', 'final_error', 'elapsed')
         out_df = pd.DataFrame(model_tuples,
                               index=self.ranks_to_test,
                               columns=columns)
