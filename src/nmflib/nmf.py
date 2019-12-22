@@ -481,7 +481,11 @@ def fit(
                                                       k,
                                                       'random',
                                                       random_state=random_state)
-    r = None  # First iteration is fitted with Poissonian overdispersion.
+    X_exp = _nmf_mu(W, H, S, O)
+    if nbinom_fit:
+        r = _initialise_nb_r(X, X_exp)
+    else:
+        r = None
 
     # Set up initial values.
     start_time = time.time()
@@ -491,7 +495,7 @@ def fit(
     n_iter = 0
     while n_iter <= max_iter:
         if nbinom_fit:
-            W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, r_fit_method='mm')
+            W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, r_fit_method='ml')
         else:
             W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, r_fit_method=None)
         n_iter += 1
@@ -511,29 +515,6 @@ def fit(
             elif (previous_error - error) / error_at_init < tol:
                 break
             previous_error = error
-
-    if nbinom_fit and n_iter < max_iter:
-        if verbose:
-            logging.info("Converged with method of moments fit. Proceeding "
-                         "with maximum likelihood.")
-
-        while n_iter <= max_iter:
-            W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, r_fit_method='ml')
-            n_iter += 1
-
-            # Test for convergence every 10 iterations.
-            if n_iter % 10 == 0:
-                X_exp = _nmf_mu(W, H, S, O)
-                error = -np.sum(loglik(X, X_exp, r))
-                errors.append(error)
-                if verbose:
-                    elapsed = time.time() - start_time
-                    logging.info(
-                        "Iteration {} after {:.3f} seconds, error: {}".format(
-                            n_iter, elapsed, error))
-                if (previous_error - error) / error_at_init < tol:
-                    break
-                previous_error = error
 
     if n_iter == max_iter:
         logging.warning("Maximum iteration reached.")
