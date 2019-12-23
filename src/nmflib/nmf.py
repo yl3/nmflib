@@ -296,32 +296,15 @@ def _iterate_nmf_fit(
     """
     if r_fit_method not in (None, 'ml', 'mm'):
         raise ValueError('r_fit_method must be in (None, "ml", "mm").')
-    prev_loglik = _divergence(X, _nmf_mu(W, H, S, O), r)
 
     W = _multiplicative_update_W(X, W, H, S, O, r)
-    cur_loglik = _divergence(X, _nmf_mu(W, H, S, O), r)
-    delta_loglik = cur_loglik - prev_loglik
-    prev_loglik = cur_loglik
-    logging.info(f"Loglik change on updating W is {delta_loglik}")
     H = _multiplicative_update_H(X, W, H, S, O, r)
-    cur_loglik = _divergence(X, _nmf_mu(W, H, S, O), r)
-    delta_loglik = cur_loglik - prev_loglik
-    prev_loglik = cur_loglik
-    logging.info(f"Loglik change on updating H is {delta_loglik}")
     mu = _nmf_mu(W, H, S, O)
     if r_fit_method is not None:
         if r_fit_method == 'mm':
             r, _ = fit_nbinom_nmf_r_mm(X, mu, W.shape[1])
         elif r_fit_method == 'ml':
             r, _ = fit_nbinom_nmf_r_ml(X, mu, r)
-        cur_loglik = _divergence(X, _nmf_mu(W, H, S, O), r)
-        delta_loglik = cur_loglik - prev_loglik
-        prev_loglik = cur_loglik
-        logging.info(f"Loglik change on updating r is {delta_loglik}")
-        logging.info(f"Updated r is {r}")
-    else:
-        # Should never get here.
-        pass
 
     return W, H, r
 
@@ -559,10 +542,6 @@ def fit(
                 logging.info(
                     "Iteration {} after {:.3f} seconds, error: {}".format(
                         n_iter, elapsed, error))
-            if previous_error is not None:
-                logging.info(
-                    f"error difference = {(previous_error - error) / np.prod(X.shape)}"
-                )
             if previous_error is None:
                 previous_error = error
             elif (previous_error - error) / np.prod(X.shape) < abstol:
