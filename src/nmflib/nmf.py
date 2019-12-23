@@ -15,10 +15,15 @@ import time
 import nmflib.constants
 
 
-def _ensure_pos(arr, epsilon=np.finfo(np.float32).eps):
-    """Replace zeroes in arr with epsilon in-place."""
-    sel = arr == 0.0
-    arr[sel] = epsilon
+def _ensure_pos(arr, epsilon=np.finfo(np.float32).eps, inplace=True):
+    """Ensure a (very low) epsilon floor for arr."""
+    sel = arr < epsilon
+    if inplace:
+        arr[sel] = epsilon
+    else:
+        arr2 = arr.copy()
+        arr2[sel] = epsilon
+        return arr2
 
 
 def _validate_is_ndarray(arr):
@@ -243,6 +248,20 @@ def _nmf_mu(W, H, S=None, O=None):  # noqa: E741
     return WHOS
 
 
+def _divergence(X, X_exp, r=None):
+    """Matrix divergence for Poisson or negative binomial."""
+
+    if r is None:
+        divergence = -np.sum(X * np.log(X_exp) - X_exp)
+    else:
+        p = 1 - _nb_p(X_exp, r)  # Since we are back to Wikipedia formulation.
+        MN = np.prod(X.shape)
+        divergence = -(np.sum(scipy.special.gammaln(X + r)) -
+                       MN * scipy.special.gammaln(r) +
+                       r * np.sum(np.log(1 - p)) + np.sum(X * np.log(p)))
+    return divergence
+
+
 def _iterate_nmf_fit(
         X,
         W,
@@ -277,31 +296,32 @@ def _iterate_nmf_fit(
     """
     if r_fit_method not in (None, 'ml', 'mm'):
         raise ValueError('r_fit_method must be in (None, "ml", "mm").')
-    prev_loglik = np.sum(loglik(X, _nmf_mu(W, H, S, O), r))
+    prev_loglik = _divergence(X, _nmf_mu(W, H, S, O), r)
 
     W = _multiplicative_update_W(X, W, H, S, O, r)
-    cur_loglik = np.sum(loglik(X, _nmf_mu(W, H, S, O), r))
+    cur_loglik = _divergence(X, _nmf_mu(W, H, S, O), r)
     delta_loglik = cur_loglik - prev_loglik
     prev_loglik = cur_loglik
     logging.info(f"Loglik change on updating W is {delta_loglik}")
     H = _multiplicative_update_H(X, W, H, S, O, r)
-    cur_loglik = np.sum(loglik(X, _nmf_mu(W, H, S, O), r))
+    cur_loglik = _divergence(X, _nmf_mu(W, H, S, O), r)
     delta_loglik = cur_loglik - prev_loglik
     prev_loglik = cur_loglik
     logging.info(f"Loglik change on updating H is {delta_loglik}")
     mu = _nmf_mu(W, H, S, O)
-    if r_fit_method == 'mm':
-        r, _ = fit_nbinom_nmf_r_mm(X, mu, W.shape[1])
-    elif r_fit_method == 'ml':
-        r, _ = fit_nbinom_nmf_r_ml(X, mu, r)
+    if r_fit_method is not None:
+        if r_fit_method == 'mm':
+            r, _ = fit_nbinom_nmf_r_mm(X, mu, W.shape[1])
+        elif r_fit_method == 'ml':
+            r, _ = fit_nbinom_nmf_r_ml(X, mu, r)
+        cur_loglik = _divergence(X, _nmf_mu(W, H, S, O), r)
+        delta_loglik = cur_loglik - prev_loglik
+        prev_loglik = cur_loglik
+        logging.info(f"Loglik change on updating r is {delta_loglik}")
+        logging.info(f"Updated r is {r}")
     else:
         # Should never get here.
         pass
-    cur_loglik = np.sum(loglik(X, _nmf_mu(W, H, S, O), r))
-    delta_loglik = cur_loglik - prev_loglik
-    prev_loglik = cur_loglik
-    logging.info(f"Loglik change on updating r is {delta_loglik}")
-    logging.info(f"Updated r is {r}")
 
     return W, H, r
 
@@ -459,8 +479,9 @@ def fit(
         S=None,
         O=None,  # noqa: E741
         nbinom_fit=False,
+        nb_fit_freq_base=1.5,
         max_iter=200,
-        tol=1e-4,
+        abstol=1e-4,
         verbose=False,
         random_state=None):
     """Fit KL-NMF using multiplicative updates.
@@ -475,8 +496,12 @@ def fit(
             representing the additive offset term.
         nbinom_fit (bool): Whether to fit a negative binomial model or a default
             Poisson model.
+        nb_fit_freq_base (int): A positive integer such that the number of
+            W and H iterations between consecutive r updates is
+            *nb_fit_freq_base*^<number_of_r_updates_so_far>.
         max_iter (int): Maximum number of iterations to use.
-        tol (float): Relative tolerance for convergence.
+        abstol (float): Absolute tolerance for convergence **per element** (in
+            the log-space of likelihood).
         verbose (bool): Whether to print progress updates every 10 iterations.
         random_state (int): The random seed to use in NMF initialisation.
 
@@ -505,13 +530,21 @@ def fit(
 
     # Set up initial values.
     start_time = time.time()
-    error_at_init = previous_error = None
+    previous_error = None
     errors = []
 
     n_iter = 0
+    r_updates = 0
+    next_r_update = 0
+
+    # Before W and H have converged, update r with a exponential schedule. After
+    # that update r at every iteration.
+    WH_converged = False
     while n_iter <= max_iter:
-        if nbinom_fit:
+        if nbinom_fit and (WH_converged or n_iter == next_r_update):
             W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, r_fit_method='ml')
+            r_updates += 1
+            next_r_update = n_iter + int(nb_fit_freq_base**r_updates)
         else:
             W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, r_fit_method=None)
         n_iter += 1
@@ -519,17 +552,30 @@ def fit(
         # Test for convergence every 10 iterations.
         if n_iter % 10 == 0:
             X_exp = _nmf_mu(W, H, S, O)
-            error = -np.sum(loglik(X, X_exp, r))
+            error = _divergence(X, X_exp, r)
             errors.append(error)
             if verbose:
                 elapsed = time.time() - start_time
                 logging.info(
                     "Iteration {} after {:.3f} seconds, error: {}".format(
                         n_iter, elapsed, error))
-            if error_at_init is None:
-                error_at_init = error
-            elif (previous_error - error) / error_at_init < tol:
-                break
+            if previous_error is not None:
+                logging.info(
+                    f"error difference = {(previous_error - error) / np.prod(X.shape)}"
+                )
+            if previous_error is None:
+                previous_error = error
+            elif (previous_error - error) / np.prod(X.shape) < abstol:
+                if nbinom_fit and not WH_converged:
+                    if verbose:
+                        elapsed = time.time() - start_time
+                        msg = ("Iteration {} after {:.3f} seconds, W and H "
+                               "converged, error: {}".format(
+                                   n_iter, elapsed, error))
+                        logging.info(msg)
+                    WH_converged = True
+                else:
+                    break
             previous_error = error
 
     if n_iter == max_iter:
