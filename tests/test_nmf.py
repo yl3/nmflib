@@ -113,14 +113,14 @@ def test_fit_nmf(caplog):
     W, H, r, n_iter, errors = nmflib.nmf.fit(SimpleNMFData.X,
                                              2,
                                              max_iter=10000,
-                                             tol=1e-10)
+                                             abstol=1e-10)
     SimpleNMFData.check_answer(W, H)
 
     # Test logging.
     W, H, r, n_iter, errors = nmflib.nmf.fit(SimpleNMFData.X,
                                              2,
                                              max_iter=21,
-                                             tol=1e-10,
+                                             abstol=1e-10,
                                              verbose=True)
     assert re.search(r"Iteration 10 after \S+ seconds, error: ", caplog.text)
     assert re.search(r"Iteration 20 after \S+ seconds, error: ", caplog.text)
@@ -131,7 +131,7 @@ def test_fit_nmf_scaled():
     W, H, r, n_iter, errors = nmflib.nmf.fit(ScaledNMFData.X,
                                              2,
                                              ScaledNMFData.S,
-                                             tol=1e-10)
+                                             abstol=1e-10)
     ScaledNMFData.check_answer(W, H)
 
 
