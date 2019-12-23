@@ -533,6 +533,8 @@ def fit(
             W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, r_fit_method='ml')
             r_updates += 1
             next_r_update = n_iter + int(nb_fit_freq_base**r_updates)
+            if verbose:
+                logging.info(f'Updated r to {r}')
         else:
             W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, r_fit_method=None)
         n_iter += 1
