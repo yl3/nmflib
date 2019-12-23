@@ -277,8 +277,18 @@ def _iterate_nmf_fit(
     """
     if r_fit_method not in (None, 'ml', 'mm'):
         raise ValueError('r_fit_method must be in (None, "ml", "mm").')
+    prev_loglik = np.sum(loglik(X, _nmf_mu(W, H, S, O), r))
+
     W = _multiplicative_update_W(X, W, H, S, O, r)
+    cur_loglik = np.sum(loglik(X, _nmf_mu(W, H, S, O), r))
+    delta_loglik = cur_loglik - prev_loglik
+    prev_loglik = cur_loglik
+    logging.info(f"Loglik change on updating W is {delta_loglik}")
     H = _multiplicative_update_H(X, W, H, S, O, r)
+    cur_loglik = np.sum(loglik(X, _nmf_mu(W, H, S, O), r))
+    delta_loglik = cur_loglik - prev_loglik
+    prev_loglik = cur_loglik
+    logging.info(f"Loglik change on updating H is {delta_loglik}")
     mu = _nmf_mu(W, H, S, O)
     if r_fit_method == 'mm':
         r, _ = fit_nbinom_nmf_r_mm(X, mu, W.shape[1])
@@ -287,6 +297,12 @@ def _iterate_nmf_fit(
     else:
         # Should never get here.
         pass
+    cur_loglik = np.sum(loglik(X, _nmf_mu(W, H, S, O), r))
+    delta_loglik = cur_loglik - prev_loglik
+    prev_loglik = cur_loglik
+    logging.info(f"Loglik change on updating r is {delta_loglik}")
+    logging.info(f"Updated r is {r}")
+
     return W, H, r
 
 
