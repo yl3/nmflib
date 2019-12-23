@@ -290,18 +290,19 @@ def _iterate_nmf_fit(
     prev_loglik = cur_loglik
     logging.info(f"Loglik change on updating H is {delta_loglik}")
     mu = _nmf_mu(W, H, S, O)
-    if r_fit_method == 'mm':
-        r, _ = fit_nbinom_nmf_r_mm(X, mu, W.shape[1])
-    elif r_fit_method == 'ml':
-        r, _ = fit_nbinom_nmf_r_ml(X, mu, r)
+    if r_fit_method is not None:
+        if r_fit_method == 'mm':
+            r, _ = fit_nbinom_nmf_r_mm(X, mu, W.shape[1])
+        elif r_fit_method == 'ml':
+            r, _ = fit_nbinom_nmf_r_ml(X, mu, r)
+        cur_loglik = np.sum(loglik(X, _nmf_mu(W, H, S, O), r))
+        delta_loglik = cur_loglik - prev_loglik
+        prev_loglik = cur_loglik
+        logging.info(f"Loglik change on updating r is {delta_loglik}")
+        logging.info(f"Updated r is {r}")
     else:
         # Should never get here.
         pass
-    cur_loglik = np.sum(loglik(X, _nmf_mu(W, H, S, O), r))
-    delta_loglik = cur_loglik - prev_loglik
-    prev_loglik = cur_loglik
-    logging.info(f"Loglik change on updating r is {delta_loglik}")
-    logging.info(f"Updated r is {r}")
 
     return W, H, r
 
@@ -459,6 +460,7 @@ def fit(
         S=None,
         O=None,  # noqa: E741
         nbinom_fit=False,
+        nb_fit_freq_base=1.5,
         max_iter=200,
         tol=1e-4,
         verbose=False,
@@ -475,6 +477,9 @@ def fit(
             representing the additive offset term.
         nbinom_fit (bool): Whether to fit a negative binomial model or a default
             Poisson model.
+        nb_fit_freq_base (int): A positive integer such that the number of
+            W and H iterations between consecutive r updates is
+            *nb_fit_freq_base*^<number_of_r_updates_so_far>.
         max_iter (int): Maximum number of iterations to use.
         tol (float): Relative tolerance for convergence.
         verbose (bool): Whether to print progress updates every 10 iterations.
@@ -509,9 +514,17 @@ def fit(
     errors = []
 
     n_iter = 0
+    r_updates = 0
+    next_r_update = 0
+
+    # Before W and H have converged, update r with a exponential schedule. After
+    # that update r at every iteration.
+    WH_converged = False
     while n_iter <= max_iter:
-        if nbinom_fit:
+        if nbinom_fit and (WH_converged or n_iter == next_r_update):
             W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, r_fit_method='ml')
+            r_updates += 1
+            next_r_update = n_iter + int(nb_fit_freq_base**r_updates)
         else:
             W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, r_fit_method=None)
         n_iter += 1
@@ -529,7 +542,16 @@ def fit(
             if error_at_init is None:
                 error_at_init = error
             elif (previous_error - error) / error_at_init < tol:
-                break
+                if nbinom_fit and not WH_converged:
+                    if verbose:
+                        elapsed = time.time() - start_time
+                        msg = ("Iteration {} after {:.3f} seconds, W and H "
+                               "converged, error: {}".format(
+                                   n_iter, elapsed, error))
+                        logging.info(msg)
+                    WH_converged = True
+                else:
+                    break
             previous_error = error
 
     if n_iter == max_iter:
