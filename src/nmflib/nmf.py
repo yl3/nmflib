@@ -254,11 +254,16 @@ def _divergence(X, X_exp, r=None):
     if r is None:
         divergence = -np.sum(X * np.log(X_exp) - X_exp)
     else:
-        p = 1 - _nb_p(X_exp, r)  # Since we are back to Wikipedia formulation.
+        # Since we are back to Wikipedia formulation, where p corresponds to
+        # scipy.stats' 1 - p.
+        one_minus_p = _nb_p(X_exp, r)
+        p = 1 - one_minus_p
+        _ensure_pos(p)
+        _ensure_pos(one_minus_p)
         MN = np.prod(X.shape)
         divergence = -(np.sum(scipy.special.gammaln(X + r)) -
                        MN * scipy.special.gammaln(r) +
-                       r * np.sum(np.log(1 - p)) + np.sum(X * np.log(p)))
+                       r * np.sum(np.log(one_minus_p)) + np.sum(X * np.log(p)))
     return divergence
 
 
