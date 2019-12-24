@@ -339,6 +339,7 @@ def test_mpfit(datafiles):
                               S,
                               O,
                               True,
+                              verbose=True,
                               random_state=0,
                               n_processes=2)
     multiprocess_elapsed = time.time() - start_time
@@ -355,7 +356,7 @@ def test_mpfit(datafiles):
                            random_state=i))
     single_process_elapsed = time.time() - start_time
     assert len(mp_res) == len(sp_res) == 2
-    assert single_process_elapsed / multiprocess_elapsed > 1.3
+    assert single_process_elapsed / multiprocess_elapsed > 1.2
 
 
 @pytest.mark.datafiles('test_data/ground.truth.syn.catalog.csv.gz',
