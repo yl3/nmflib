@@ -925,6 +925,7 @@ class SingleNMFModel:
             'sample_gof': sample_gof_pval,
             'n_iter': n_iter_best,
             'errors': errors_best,
+            'loglik': fitted_loglik,
             'aic': aic,
             'bic': bic,
             'elapsed': elapsed
@@ -1030,11 +1031,12 @@ class SignaturesModel:
         for rank in self.ranks_to_test:
             m = model_of_rank[rank]
             model_tuples.append(
-                (m, m.fitted['r'], m.fitted['gof_D'], m.fitted['gof_pval'],
-                 m.fitted['aic'], m.fitted['bic'], m.fitted['n_iter'],
-                 m.fitted['errors'][-1], m.fitted['elapsed']))
-        columns = ('nmf_model', 'dispersion', 'gof_D', 'gof_pval', 'aic', 'bic',
-                   'n_iter', 'final_error', 'elapsed')
+                (m, m.fitted['r'], m.fitted['loglik'], m.fitted['gof_D'],
+                 m.fitted['gof_pval'], m.fitted['aic'], m.fitted['bic'],
+                 m.fitted['n_iter'], m.fitted['errors'][-1],
+                 m.fitted['elapsed']))
+        columns = ('nmf_model', 'dispersion', 'log-likelihood', 'gof_D',
+                   'gof_pval', 'aic', 'bic', 'n_iter', 'final_error', 'elapsed')
         out_df = pd.DataFrame(model_tuples,
                               index=self.ranks_to_test,
                               columns=columns)
