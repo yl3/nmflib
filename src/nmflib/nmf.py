@@ -6,6 +6,7 @@ import os
 import multiprocessing
 import sys
 import time
+import tqdm
 
 import numpy as np
 import pandas as pd
@@ -428,10 +429,11 @@ def calc_bic(loglik, k, n):
     return bic
 
 
-def _sim_loglik_helper_func(X, sim_count, X_exp=None, r=None, p=None):
+def _sim_loglik_helper_func(params):
     """A helper function for computing simulated log-likelihoods.
 
-    Either `X_exp` or both `r` and `p` must be provided.
+    Note that all parameters below must be provided as a tuple to satisfy
+    multiprocessing.Pool.imap_unordered().
 
     Args:
         X (array-like): Observed counts: a nonnegative integer matrix of shape
@@ -447,6 +449,7 @@ def _sim_loglik_helper_func(X, sim_count, X_exp=None, r=None, p=None):
         numpy.ndarray: An array of simulated log-likelihoods of shape
             (sim_count, X.shape[1]).
     """
+    X, sim_count, X_exp, r, p = params
     # Make a copy of the big matrices.
     X = X.copy()
     if X_exp is not None:
@@ -510,13 +513,14 @@ def gof(X, X_exp, sim_count=None, random_state=None, r=None, n_processes=1):
     else:
         p = None
     if n_processes == 1:
-        sim_logliks = _sim_loglik_helper_func(X, sim_count, X_exp, r, p)
+        sim_logliks = _sim_loglik_helper_func((X, sim_count, X_exp, r, p))
         sim_logliks = np.array(sim_logliks)
     else:
         process_pool = multiprocessing.Pool(n_processes)
         args_list = [(X, sim_count, X_exp, r, p)] * n_processes
-        sim_logliks = process_pool.starmap(_sim_loglik_helper_func, args_list)
-        sim_logliks = np.concatenate(sim_logliks, axis=0)
+        sim_logliks = process_pool.imap_unordered(_sim_loglik_helper_func,
+                                                  args_list)
+        sim_logliks = np.concatenate(list(sim_logliks), axis=0)
 
     # Calculate empirical P values for row sample.
     signif_simuls = np.sum(sim_logliks <= obs_loglik_rowvec, axis=0)
@@ -649,6 +653,11 @@ def fit(
     return W, H, r, n_iter, errors
 
 
+def unpack_args_fit(args_tuple):
+    """Run fit(), except unpack arguments first."""
+    return fit(*args_tuple)
+
+
 def mpfit(
         random_inits,
         X,
@@ -660,7 +669,8 @@ def mpfit(
         max_iter=200,
         abstol=1e-4,
         random_state=None,
-        n_processes=None):
+        n_processes=None,
+        verbose=False):
     """Parallelised NMF fitting.
 
     Args:
@@ -671,6 +681,7 @@ def mpfit(
             np.array(range(random_inits)).
         n_processes (int): Number of processes to spawn. By default,
             :func:`os.cpu_count` - 1  is used.
+        verbose (bool): Whether to show a progress bar.
 
     Returns:
         list: A list of outputs from :func:`fit`.
@@ -691,7 +702,13 @@ def mpfit(
             args_list.append((X, k, S, O, nbinom_fit, nb_fit_freq_base,
                               max_iter, abstol, False, random_state + i, True))
     process_pool = multiprocessing.Pool(n_processes)
-    fitted_res = process_pool.starmap(fit, args_list)
+    if verbose:
+        fitted_res = list(
+            tqdm.tqdm(process_pool.imap_unordered(unpack_args_fit, args_list),
+                      total=random_inits))
+    else:
+        fitted_res = list(
+            process_pool.imap_unordered(unpack_args_fit, args_list))
     return fitted_res
 
 
@@ -853,14 +870,14 @@ class SingleNMFModel:
         self.gof_sim_count = gof_sim_count
         self.fitted = None
 
-    def fit(self, print_dots=True, multiprocess=False, **kwargs):
+    def fit(self, verbose=False, multiprocess=False, **kwargs):
         """Fit the current NMF model and compute goodness-of-fit.
 
         The results are stored in :attr:`fitted`.
 
         Args:
-            print_dots (bool): Whether to print a dot for each random
-                initiation to STDERR.
+            verbose (bool): Whether to show a progress bar for progress in
+                random initialisation fits.
             multiprocess (bool or int): Whether to use multiprocessing. If int,
                 then that number of parallel processes are spawned. If True,
                 then the number of processes is set to :func:`os.cpu_count` - 1.
@@ -872,16 +889,16 @@ class SingleNMFModel:
         # Compute the best decomposition.
         if processes_to_spawn == 1:
             errors_best = None
-            for _ in range(self.random_inits):
-                if print_dots:
-                    sys.stderr.write('.')
+            if verbose:
+                random_init_range = tqdm.tqdm(range(self.random_inits))
+            else:
+                random_init_range = range(self.random_inits)
+            for _ in random_init_range:
                 W, H, r, n_iter, errors = fit(self.X, self.rank, self.S, self.O,
                                               self.nbinom, **kwargs)
                 if errors_best is None or errors[-1] < errors_best[-1]:
                     W_best, H_best, r_best, n_iter_best = W, H, r, n_iter
                     errors_best = errors
-            if print_dots:
-                sys.stderr.write('\n')  # The newline after the dots.
         else:
             fitted_models = mpfit(self.random_inits,
                                   self.X,
@@ -890,6 +907,7 @@ class SingleNMFModel:
                                   self.O,
                                   self.nbinom,
                                   n_processes=processes_to_spawn,
+                                  verbose=verbose,
                                   **kwargs)
             best_model_idx = np.argmax([m[4][-1] for m in fitted_models])
             W_best, H_best, r_best, n_iter_best, errors_best = \
@@ -1014,19 +1032,21 @@ class SignaturesModel:
         self.gof_sim_count = gof_sim_count
         self.fitted = None
 
-    def fit(self, **kwargs):
+    def fit(self, verbose=False, **kwargs):
         """Fit all NMF ranks and store their goodness-of-fit values.
 
         Args:
+            verbose (bool): Whether to show a progress bar for progress in
+                random initialisation fits.
             **kwargs: Keyword arguments for :func:`nmflib.nmf.fit`.
         """
         model_of_rank = {}
         for rank in self.ranks_to_test:
-            sys.stderr.write(str(rank))
+            logging.info(f'Fitting rank {rank}')
             model_of_rank[rank] = SingleNMFModel(self.X, rank, self.S, self.O,
                                                  self.nbinom, self.random_inits,
                                                  self.gof_sim_count)
-            model_of_rank[rank].fit(print_dots=True, **kwargs)
+            model_of_rank[rank].fit(verbose, **kwargs)
         model_tuples = []
         for rank in self.ranks_to_test:
             m = model_of_rank[rank]
