@@ -1,16 +1,18 @@
 """Nonnegative matrix factorisation code for count data."""
 # Copyright (C) 2019 Yilong Li (yilong.li.yl3@gmail.com) - All Rights Reserved
 
+import logging
+import os
+import multiprocessing
+import sys
+import time
+
 import numpy as np
 import pandas as pd
 import scipy.optimize
 from scipy.special import digamma, polygamma
 import sklearn.decomposition._nmf
 import sklearn.metrics.pairwise
-import sys
-
-import logging
-import time
 
 import nmflib.constants
 
@@ -314,6 +316,30 @@ def _iterate_nmf_fit(
     return W, H, r
 
 
+def _get_cpu_count(multiprocess):
+    """Determine number of processes to use.
+
+    Args:
+        multiprocess (bool or int): Whether to use multiprocessing. If int, then
+            then that number of parallel processes are spawned. If True, then
+            the number of processes is set to :func:`os.cpu_count` - 1.
+
+    Returns:
+        int: Number of processes to use.
+    """
+    if (not isinstance(multiprocess, bool)
+            and not (isinstance(multiprocess, int) and multiprocess >= 2)):
+        raise ValueError("Parameter 'multiprocess' must either be a "
+                         "boolean or >= 2.")
+    if multiprocess is False:
+        processes_to_use = 1
+    elif multiprocess is True:
+        processes_to_use = os.cpu_count() - 1
+    else:
+        processes_to_use = multiprocess
+    return processes_to_use
+
+
 def fit_nbinom_r_mm(X, mu, dof, reltol=0.001):
     """Fit the negative binomial dispersion parameter via method of moments."""
     prev_r = _initialise_nb_r(X, mu)
@@ -402,7 +428,46 @@ def calc_bic(loglik, k, n):
     return bic
 
 
-def gof(X, X_exp, sim_count=None, random_state=None, r=None):
+def _sim_loglik_helper_func(X, sim_count, X_exp=None, r=None, p=None):
+    """A helper function for computing simulated log-likelihoods.
+
+    Either `X_exp` or both `r` and `p` must be provided.
+
+    Args:
+        X (array-like): Observed counts: a nonnegative integer matrix of shape
+            (M, N).
+        sim_count (int): How many simulated instances of X should be generated?
+        X_exp (array-like): A nonnegative expected values matrix of shape
+            (M, N).
+        r (float): A positive dispersion parameter. If None, then a Poisson
+            model is assumed.
+        p (float): A positive negative binomial success probability.
+
+    Returns:
+        numpy.ndarray: An array of simulated log-likelihoods of shape
+            (sim_count, X.shape[1]).
+    """
+    # Make a copy of the big matrices.
+    X = X.copy()
+    if X_exp is not None:
+        X_exp = X_exp.copy()
+    sim_logliks = []
+    for _ in range(sim_count):
+        if r is not None and p is not None:
+            # Simulate from negative binomial distribution.
+            sim_X = scipy.stats.nbinom.rvs(r, p, size=X.shape)
+            sim_logliks.append(
+                scipy.stats.nbinom.logpmf(sim_X, r, p).sum(axis=0))
+        else:
+            # Simulate from Poisson distribution.
+            sim_X = scipy.stats.poisson.rvs(X_exp)
+            sim_logliks.append(
+                scipy.stats.poisson.logpmf(sim_X, X_exp).sum(axis=0))
+    sim_logliks = np.array(sim_logliks)
+    return sim_logliks
+
+
+def gof(X, X_exp, sim_count=None, random_state=None, r=None, n_processes=1):
     """Bootstrapped goodness-of-fit for count data NMF.
 
     Given that X ~ Poisson(X_exp), compute the P value for each column in X
@@ -413,11 +478,12 @@ def gof(X, X_exp, sim_count=None, random_state=None, r=None):
             (M, N).
         X_exp (array-like): A nonnegative expected values matrix of shape
             (M, N).
-        sim_count (int): How many simulated instances of X should be generated?
-            Default: 100.
+        sim_count (int): How many simulated instances of X should be generated
+            per process? Default: 100.
         random_state (int): Random seed.
         r (float): A positive dispersion parameter. If None, then a Poisson
             model is assumed.
+        n_processes (int): Number of processes to use.
 
     Returns:
         gof_D (float): KS test statistic.
@@ -431,26 +497,26 @@ def gof(X, X_exp, sim_count=None, random_state=None, r=None):
         np.random.seed(random_state)
     if sim_count is None:
         sim_count = 100
+    if not isinstance(n_processes, int) or n_processes < 1:
+        raise ValueError("Parameter n_processes must be a positive " "integer.")
 
     # Observed log-likelihood of each sample - represented as a row vector.
     obs_loglik_mat = loglik(X, X_exp, r)
     obs_loglik_rowvec = obs_loglik_mat.sum(axis=0).reshape(1, -1)
 
     # Simulated log-likelihood matrices.
-    sim_logliks = []
     if r is not None:
         p = _nb_p(X_exp, r)
-    for k in range(sim_count):
-        if r is None:
-            sim_X = scipy.stats.poisson.rvs(X_exp)
-            sim_logliks.append(
-                scipy.stats.poisson.logpmf(sim_X, X_exp).sum(axis=0))
-        else:
-            sim_X = scipy.stats.nbinom.rvs(r, p, size=X.shape)
-            sim_logliks.append(
-                scipy.stats.nbinom.logpmf(sim_X, r, p).sum(axis=0))
-
-    sim_logliks = np.array(sim_logliks)
+    else:
+        p = None
+    if n_processes == 1:
+        sim_logliks = _sim_loglik_helper_func(X, sim_count, X_exp, r, p)
+        sim_logliks = np.array(sim_logliks)
+    else:
+        process_pool = multiprocessing.Pool(n_processes)
+        args_list = [(X, sim_count, X_exp, r, p)] * n_processes
+        sim_logliks = process_pool.starmap(_sim_loglik_helper_func, args_list)
+        sim_logliks = np.concatenate(sim_logliks, axis=0)
 
     # Calculate empirical P values for row sample.
     signif_simuls = np.sum(sim_logliks <= obs_loglik_rowvec, axis=0)
@@ -471,7 +537,8 @@ def fit(
         max_iter=200,
         abstol=1e-4,
         verbose=False,
-        random_state=None):
+        random_state=None,
+        copy_mats=False):
     """Fit KL-NMF using multiplicative updates.
 
     Args:
@@ -492,6 +559,7 @@ def fit(
             the log-space of likelihood).
         verbose (bool): Whether to print progress updates every 10 iterations.
         random_state (int): The random seed to use in NMF initialisation.
+        copy_mats (bool): Whether to make a local copy of each input matrix.
 
     Returns:
         numpy.ndarray: The fitted W matrix of shape (M, k). The matrix is scaled
@@ -506,6 +574,13 @@ def fit(
     X = _validate_is_ndarray(X)
     S = _validate_is_ndarray(S)
     O = _validate_is_ndarray(O)  # noqa: E741
+    if copy_mats:
+        # Make a copy of all the mutable variables.
+        X = X.copy()
+        if S is not None:
+            S = S.copy()
+        if O is not None:
+            O = O.copy()  # noqa: E741
     W, H = sklearn.decomposition._nmf._initialize_nmf(X,
                                                       k,
                                                       'random',
@@ -572,6 +647,52 @@ def fit(
     W /= W_colsums[np.newaxis, :]
     H *= W_colsums[:, np.newaxis]
     return W, H, r, n_iter, errors
+
+
+def mpfit(
+        random_inits,
+        X,
+        k,
+        S=None,
+        O=None,  # noqa: E741
+        nbinom_fit=False,
+        nb_fit_freq_base=1.5,
+        max_iter=200,
+        abstol=1e-4,
+        random_state=None,
+        n_processes=None):
+    """Parallelised NMF fitting.
+
+    Args:
+        random_inits (int): The number of random initialisations to fit using
+            NMF.
+        random_state (int): If provided, then the random states used are for
+            each random initialisation are `random_state` +
+            np.array(range(random_inits)).
+        n_processes (int): Number of processes to spawn. By default,
+            :func:`os.cpu_count` - 1  is used.
+
+    Returns:
+        list: A list of outputs from :func:`fit`.
+
+    See also:
+        Additional argument documentation is found in function :func:`fit`.
+    """
+    if n_processes is None:
+        n_processes = os.cpu_count() - 1
+    # Create argument list for fit(). The last three arguments are 'verbose',
+    # 'random_state' and 'copy_mats'.
+    if random_state is None:
+        args_list = [(X, k, S, O, nbinom_fit, nb_fit_freq_base, max_iter,
+                      abstol, False, None, True)] * random_inits
+    else:
+        args_list = []
+        for i in range(random_inits):
+            args_list.append((X, k, S, O, nbinom_fit, nb_fit_freq_base,
+                              max_iter, abstol, False, random_state + i, True))
+    process_pool = multiprocessing.Pool(n_processes)
+    fitted_res = process_pool.starmap(fit, args_list)
+    return fitted_res
 
 
 def match_signatures(W1, W2):
@@ -732,7 +853,7 @@ class SingleNMFModel:
         self.gof_sim_count = gof_sim_count
         self.fitted = None
 
-    def fit(self, print_dots=True, **kwargs):
+    def fit(self, print_dots=True, multiprocess=False, **kwargs):
         """Fit the current NMF model and compute goodness-of-fit.
 
         The results are stored in :attr:`fitted`.
@@ -740,29 +861,48 @@ class SingleNMFModel:
         Args:
             print_dots (bool): Whether to print a dot for each random
                 initiation to STDERR.
+            multiprocess (bool or int): Whether to use multiprocessing. If int,
+                then that number of parallel processes are spawned. If True,
+                then the number of processes is set to :func:`os.cpu_count` - 1.
             **kwargs: Keyword arguments for :func:`nmflib.nmf.fit`.
         """
+        processes_to_spawn = _get_cpu_count(multiprocess)
         start_time = time.time()
 
         # Compute the best decomposition.
-        errors_best = None
-        for _ in range(self.random_inits):
+        if processes_to_spawn == 1:
+            errors_best = None
+            for _ in range(self.random_inits):
+                if print_dots:
+                    sys.stderr.write('.')
+                W, H, r, n_iter, errors = fit(self.X, self.rank, self.S, self.O,
+                                              self.nbinom, **kwargs)
+                if errors_best is None or errors[-1] < errors_best[-1]:
+                    W_best, H_best, r_best, n_iter_best = W, H, r, n_iter
+                    errors_best = errors
             if print_dots:
-                sys.stderr.write('.')
-            W, H, r, n_iter, errors = fit(self.X, self.rank, self.S, self.O,
-                                          self.nbinom, **kwargs)
-            if errors_best is None or errors[-1] < errors_best[-1]:
-                W_best, H_best, r_best, n_iter_best = W, H, r, n_iter
-                errors_best = errors
-        if print_dots:
-            sys.stderr.write('\n')  # The newline after the dots.
+                sys.stderr.write('\n')  # The newline after the dots.
+        else:
+            fitted_models = mpfit(self.random_inits,
+                                  self.X,
+                                  self.rank,
+                                  self.S,
+                                  self.O,
+                                  self.nbinom,
+                                  n_processes=processes_to_spawn,
+                                  **kwargs)
+            best_model_idx = np.argmax([m[4][-1] for m in fitted_models])
+            W_best, H_best, r_best, n_iter_best, errors_best = \
+                fitted_models[best_model_idx]
 
         # Calculate goodness-of-fit.
         X_pred = _nmf_mu(W_best, H_best, self.S, self.O)
-        gof_D, gof_pval, sample_gof_pval, sim_logliks = gof(self.X,
-                                                            X_pred,
-                                                            self.gof_sim_count,
-                                                            r=r_best)
+        gof_D, gof_pval, sample_gof_pval, sim_logliks = gof(
+            self.X,
+            X_pred,
+            self.gof_sim_count,
+            r=r_best,
+            n_processes=processes_to_spawn)
 
         # Calculate AIC and BIC.
         fitted_loglik = np.sum(loglik(self.X, X_pred, r_best))
@@ -799,6 +939,22 @@ class SingleNMFModel:
         if self.fitted is not None:
             out_str += ' *'
         return out_str
+
+    def _nmf_fitter_helper_func(self, print_dots=False, **kwargs):
+        """Fit an NMF model from a random initialisation.
+
+        Args:
+            kwargs (dict): Additional parameters for :func:`fit` apart from
+                `X`, `k`, `S`, `O` and `nbinom_fit`.
+        """
+        def fitter_helper_func(_=None):
+            if print_dots:
+                sys.stderr.write('.')
+            W, H, r, n_iter, errors = fit(self.X, self.rank, self.S, self.O,
+                                          self.nbinom, **kwargs)
+            return W, H, r, n_iter, errors
+
+        return fitter_helper_func
 
 
 class SignaturesModel:
