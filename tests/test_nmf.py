@@ -8,6 +8,7 @@ import pandas as pd
 import re
 import scipy.stats
 import sklearn.decomposition._nmf
+import time
 
 import nmflib.constants
 import nmflib.nmf
@@ -113,14 +114,14 @@ def test_fit_nmf(caplog):
     W, H, r, n_iter, errors = nmflib.nmf.fit(SimpleNMFData.X,
                                              2,
                                              max_iter=10000,
-                                             tol=1e-10)
+                                             abstol=1e-10)
     SimpleNMFData.check_answer(W, H)
 
     # Test logging.
     W, H, r, n_iter, errors = nmflib.nmf.fit(SimpleNMFData.X,
                                              2,
                                              max_iter=21,
-                                             tol=1e-10,
+                                             abstol=1e-10,
                                              verbose=True)
     assert re.search(r"Iteration 10 after \S+ seconds, error: ", caplog.text)
     assert re.search(r"Iteration 20 after \S+ seconds, error: ", caplog.text)
@@ -131,7 +132,7 @@ def test_fit_nmf_scaled():
     W, H, r, n_iter, errors = nmflib.nmf.fit(ScaledNMFData.X,
                                              2,
                                              ScaledNMFData.S,
-                                             tol=1e-10)
+                                             abstol=1e-10)
     ScaledNMFData.check_answer(W, H)
 
 
@@ -315,6 +316,106 @@ def test_signatures_model():
     # Explicitly check SingleNMFModel.__str__().
     assert (sig_models.fitted.loc[1, 'nmf_model'].__str__() ==
             'Poisson-NMF(M=4, N=4, K=1) *')
+
+
+@pytest.mark.datafiles('test_data/ground.truth.syn.catalog.csv.gz',
+                       'test_data/ground.truth.syn.sigs.csv.gz',
+                       'test_data/ground.truth.syn.exposures.csv.gz')
+def test_mpfit(datafiles):
+    """Make sure nmf.mpfit() works and is faster than just fit()."""
+    datafiles = str(datafiles)
+    true_r = 10
+    synthetic_pcawg_data = SyntheticPCAWG(datafiles, true_r)
+    X_obs = synthetic_pcawg_data.simulate()
+    S = synthetic_pcawg_data.S
+    O = synthetic_pcawg_data.O  # noqa: E741
+    TARGET_RANK = 20
+
+    # Measure time with and without multiprocessing.
+    start_time = time.time()
+    mp_res = nmflib.nmf.mpfit(2,
+                              X_obs,
+                              TARGET_RANK,
+                              S,
+                              O,
+                              True,
+                              random_state=0,
+                              n_processes=2)
+    multiprocess_elapsed = time.time() - start_time
+    start_time = time.time()
+    sp_res = []
+    for i in range(2):
+        sp_res.append(
+            nmflib.nmf.fit(X_obs,
+                           TARGET_RANK,
+                           S,
+                           O,
+                           True,
+                           verbose=True,
+                           random_state=i))
+    single_process_elapsed = time.time() - start_time
+    assert len(mp_res) == len(sp_res) == 2
+    assert single_process_elapsed / multiprocess_elapsed > 1.3
+
+
+@pytest.mark.datafiles('test_data/ground.truth.syn.catalog.csv.gz',
+                       'test_data/ground.truth.syn.sigs.csv.gz',
+                       'test_data/ground.truth.syn.exposures.csv.gz')
+def test_parallel_gof(datafiles):
+    """Make sure nmf.mpfit() works and is faster than just fit()."""
+    datafiles = str(datafiles)
+    true_r = 10
+    synthetic_pcawg_data = SyntheticPCAWG(datafiles, true_r)
+    X_obs = synthetic_pcawg_data.simulate()
+    X_exp = synthetic_pcawg_data.X_exp
+
+    # Measure time with and without multiprocessing.
+    start_time = time.time()
+    mp_res = nmflib.nmf.gof(X_obs, X_exp, 100, r=true_r, n_processes=2)
+    multiprocess_elapsed = time.time() - start_time
+    start_time = time.time()
+    sp_res = nmflib.nmf.gof(X_obs, X_exp, 200, r=true_r, n_processes=1)
+    single_process_elapsed = time.time() - start_time
+    assert single_process_elapsed / multiprocess_elapsed > 1.2
+
+
+@pytest.mark.datafiles('test_data/ground.truth.syn.catalog.csv.gz',
+                       'test_data/ground.truth.syn.sigs.csv.gz',
+                       'test_data/ground.truth.syn.exposures.csv.gz')
+def test_multiprocess_single_nmf_model(datafiles):
+    """Test SingleNMFModel using multiprocessing."""
+    datafiles = str(datafiles)
+    true_r = 10
+    synthetic_pcawg_data = SyntheticPCAWG(datafiles, true_r)
+    X_obs = synthetic_pcawg_data.simulate()
+    S = synthetic_pcawg_data.S
+    O = synthetic_pcawg_data.O  # noqa: E741
+    TARGET_RANK = 20
+
+    # Measure time with and without multiprocessing.
+    single_nmf_model = nmflib.nmf.SingleNMFModel(X_obs,
+                                                 TARGET_RANK,
+                                                 S,
+                                                 O,
+                                                 True,
+                                                 random_inits=2,
+                                                 gof_sim_count=50)
+    start_time = time.time()
+    single_nmf_model.fit(multiprocess=2)
+    multiprocess_elapsed = time.time() - start_time
+
+    single_nmf_model = nmflib.nmf.SingleNMFModel(X_obs,
+                                                 TARGET_RANK,
+                                                 S,
+                                                 O,
+                                                 True,
+                                                 random_inits=2,
+                                                 gof_sim_count=100)
+    start_time = time.time()
+    single_nmf_model.fit(multiprocess=False)
+    single_process_elapsed = time.time() - start_time
+
+    assert single_process_elapsed / multiprocess_elapsed > 1.5
 
 
 def test_validate_is_ndarray():
