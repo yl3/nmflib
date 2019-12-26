@@ -450,10 +450,6 @@ def _sim_loglik_helper_func(params):
             (sim_count, X.shape[1]).
     """
     X, sim_count, X_exp, r, p = params
-    # Make a copy of the big matrices.
-    X = X.copy()
-    if X_exp is not None:
-        X_exp = X_exp.copy()
     sim_logliks = []
     for _ in range(sim_count):
         if r is not None and p is not None:
@@ -541,8 +537,7 @@ def fit(
         max_iter=200,
         abstol=1e-4,
         verbose=False,
-        random_state=None,
-        copy_mats=False):
+        random_state=None):
     """Fit KL-NMF using multiplicative updates.
 
     Args:
@@ -563,7 +558,6 @@ def fit(
             the log-space of likelihood).
         verbose (bool): Whether to print progress updates every 10 iterations.
         random_state (int): The random seed to use in NMF initialisation.
-        copy_mats (bool): Whether to make a local copy of each input matrix.
 
     Returns:
         numpy.ndarray: The fitted W matrix of shape (M, k). The matrix is scaled
@@ -578,13 +572,6 @@ def fit(
     X = _validate_is_ndarray(X)
     S = _validate_is_ndarray(S)
     O = _validate_is_ndarray(O)  # noqa: E741
-    if copy_mats:
-        # Make a copy of all the mutable variables.
-        X = X.copy()
-        if S is not None:
-            S = S.copy()
-        if O is not None:
-            O = O.copy()  # noqa: E741
     W, H = sklearn.decomposition._nmf._initialize_nmf(X,
                                                       k,
                                                       'random',
@@ -692,10 +679,10 @@ def mpfit(
     if n_processes is None:
         n_processes = os.cpu_count() - 1
     # Create argument list for fit(). The last three arguments are 'verbose',
-    # 'random_state' and 'copy_mats'.
+    # and 'random_state'.
     if random_state is None:
         args_list = [(X, k, S, O, nbinom_fit, nb_fit_freq_base, max_iter,
-                      abstol, False, None, True)] * random_inits
+                      abstol, False, None)] * random_inits
     else:
         args_list = []
         for i in range(random_inits):
