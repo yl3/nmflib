@@ -594,7 +594,7 @@ def fit(
     # Before W and H have converged, update r with a exponential schedule. After
     # that update r at every iteration.
     WH_converged = False
-    while n_iter <= max_iter:
+    while n_iter < max_iter:
         if nbinom_fit and (WH_converged or n_iter == next_r_update):
             W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, r_fit_method='ml')
             r_updates += 1

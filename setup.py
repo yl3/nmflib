@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(name='nmflib',
-      version='0.0.0',
+      version='0.0.1',
       description='Mutation NMF analysis library',
       author='Yilong Li',
       author_email='yilong.li.yl3@gmail.com',
