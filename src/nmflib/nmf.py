@@ -776,6 +776,14 @@ def hk_lrt(
     x_obs = x_obs.reshape(-1, 1)
     if h_hat is not None:
         h_hat = h_hat.reshape(-1, 1)
+    else:
+        _, h_hat, _, _, _ = fit(x_obs,
+                                None,
+                                S,
+                                O,
+                                W_fixed=W,
+                                r=r,
+                                **fit_kwargs)
 
     # Overall ML log-likelihood.
     ml_loglik = np.sum(loglik(x_obs, None, r, W, h_hat, S, O))
@@ -802,11 +810,9 @@ def hk_lrt(
             restricted_h_hat.reshape(-1))
 
 
-class _StatefulNMFExposureFitter:
+class _NMFProfileLoglikFitter:
     """
-    Helper class that provides a h_i -> profile log-likelihood function that
-    remembers the current h vector values. Helpful for ensuring that h_hat is
-    closer to h_hat when running fit().
+    Helper class that provides a h_i -> profile log-likelihood function.
 
     Args:
         x_obs (numpy.ndarray): A column matrix of shape (M, 1).
@@ -842,12 +848,16 @@ class _StatefulNMFExposureFitter:
         self.r = r
         self.fit_kwargs = fit_kwargs
 
-    def _profile_loglik(self, cur_hi):
-        """Compute the profile log-likelihood for cur_h_idx.
+    def _profile_ml(self, cur_hi):
+        """Compute the profile maximum log-likelihood for cur_h_idx.
 
         Args:
             cur_hi (float): Current value for h_i, which is the exposure for
                 signature W_i.
+
+        Returns:
+            float: Maximum log-likelihood with the restriction that
+                h[self.sig_idx] == cur_hi.
         """
         O_plus_Whi = self.O + self.Wi * cur_hi
         _, h_nuisance_hat, _, _, _ = fit(self.x,
@@ -858,11 +868,10 @@ class _StatefulNMFExposureFitter:
                                          H_init=self.h_nuisance,
                                          r=self.r,
                                          **self.fit_kwargs)
-        profile_loglik = np.sum(
+        profile_ml = np.sum(
             loglik(self.x, None, self.r, self.W_nuisance, h_nuisance_hat,
                    self.S, O_plus_Whi))
-        self.h_nuisance = h_nuisance_hat
-        return profile_loglik
+        return profile_ml
 
 
 def hk_confint(
@@ -910,10 +919,18 @@ def hk_confint(
     """
     # Convert variables into appropriate column vectors.
     x_obs = x_obs.reshape(-1, 1)
-    if h_hat is not None:
-        h_hat = h_hat.reshape(-1, 1)
     if fit_kwargs is None:
         fit_kwargs = {}
+    if h_hat is not None:
+        h_hat = h_hat.reshape(-1, 1)
+    else:
+        _, h_hat, _, _, _ = fit(x_obs,
+                                None,
+                                S,
+                                O,
+                                W_fixed=W,
+                                r=r,
+                                **fit_kwargs)
 
     # Compute LRT for signature sig_idx having zero exposure.
     h0_chi2_pval, h0_chi2_stat, ml_loglik, h0_loglik, _ = hk_lrt(
@@ -921,8 +938,7 @@ def hk_confint(
 
     # Calculate the minimum null hypothesis log-likelihood to be considered to
     # be within the alpha-confidence interval.
-    chisq_dof = len(x_obs)
-    chisq_cutoff = scipy.stats.chi2.ppf(1 - alpha, chisq_dof)
+    chisq_cutoff = scipy.stats.chi2.ppf(1 - alpha, 1)
     h0_loglik_cutoff = ml_loglik - chisq_cutoff / 2
 
     # Compute the lower end of the confidence interval. First check if zero
@@ -931,31 +947,93 @@ def hk_confint(
         confint_lower_bound = 0
         r_lower_bound = None
     else:
-        target_f = _StatefulNMFExposureFitter(x_obs, W, h_hat, sig_idx, S, O, r,
-                                              **fit_kwargs)._profile_loglik
+        target_f = _NMFProfileLoglikFitter(x_obs, W, h_hat, sig_idx, S, O, r,
+                                           **fit_kwargs)._profile_ml
         confint_lower_bound, r_lower_bound = scipy.optimize.brentq(
-            lambda h_i: h0_loglik_cutoff - target_f(h_i),
-            0,
+            lambda h_i: target_f(h_i) - h0_loglik_cutoff,
             h_hat[sig_idx, 0],
+            0,
             xtol=brentq_xtol,
             rtol=brentq_rtol,
             full_output=True,
             disp=True)
 
     # Compute the upper end of the confidence interval.
-    target_f = _StatefulNMFExposureFitter(x_obs, W, h_hat, sig_idx, S, O, r,
-                                          **fit_kwargs)._profile_loglik
+    target_f = _NMFProfileLoglikFitter(x_obs, W, h_hat, sig_idx, S, O, r,
+                                       **fit_kwargs)._profile_ml
+    upper_bound_upper_bound = np.sum(x_obs)
+    while target_f(upper_bound_upper_bound) - h0_loglik_cutoff > 0:
+        upper_bound_upper_bound *= 2
     confint_upper_bound, r_upper_bound = scipy.optimize.brentq(
-        lambda h_i: h0_loglik_cutoff - target_f(h_i),
+        lambda h_i: target_f(h_i) - h0_loglik_cutoff,
         h_hat[sig_idx, 0],
-        np.sum(x_obs + 1),
+        upper_bound_upper_bound,
         xtol=brentq_xtol,
         rtol=brentq_rtol,
         full_output=True,
         disp=True)
 
-    return (confint_lower_bound, confint_upper_bound, h0_chi2_pval,
-            h0_chi2_stat, ml_loglik, h0_loglik, r_upper_bound, r_lower_bound)
+    return (h_hat[sig_idx, 0], confint_lower_bound, confint_upper_bound,
+            h0_chi2_pval, h0_chi2_stat, ml_loglik, h0_loglik, r_lower_bound,
+            r_upper_bound)
+
+
+def h_confint(
+        x_obs,
+        W,
+        S=None,
+        O=None,  # noqa: E741
+        alpha=0.05,
+        r=None,
+        h_hat=None,
+        brentq_xtol=1e-5,
+        brentq_rtol=1e-5,
+        fit_kwargs=None):
+    """Compute LRT and confidence intervals for each signature's exposure.
+
+    Compute the likelihood-ratio test for the null hypothesis for each signature
+    that the signature's exposure is zero. Then compute the (1 - `alpha`)-
+    confidence interval for the estimated exposure value.
+
+    Args:
+        x_obs (numpy.ndarray): 1D array of observed mutation counts across M
+            mutation types.
+        W (numpy.ndarray): A signatures matrix of shape (M, k).
+        alpha (float): The cumulative probability that should lie outside the
+            confidence intervals (in total for both sides).
+        r (float): If provided, negative binomial model will be used.
+        h_hat (numpy.ndarray): 1D array of previously fitted signature exposures
+            across k signatures.
+        brentq_xtol (float): Parameter `xtol` for :func:`scipy.optimize.brentq`.
+        brentq_rtol (float): Parameter `rtol` for :func:`scipy.optimize.brentq`.
+        fit_kwargs (dict): Additional keyword arguments for :func:`fit`.
+
+    Returns:
+        pandas.DataFrame: A data frame of confidence intervals and likelihood
+            ratio results.
+    """
+    if h_hat is None:
+        _, h_hat, _, _, _ = fit(x_obs,
+                                None,
+                                S,
+                                O,
+                                W_fixed=W,
+                                r=r,
+                                **fit_kwargs)
+        h_hat = h_hat.reshape(-1)  # hk_confint() requires an 1D array.
+    output_tuples = []
+    for sig_idx in range(len(h_hat)):
+        output_tuple = hk_confint(x_obs, W, sig_idx, S, O, alpha, r, h_hat,
+                                  brentq_xtol, brentq_rtol, fit_kwargs)
+        (h_hat_i, confint_lower_bound, confint_upper_bound, h0_chi2_pval,
+         h0_chi2_stat, ml_loglik, h0_loglik, _, _) = output_tuple
+        output_tuples.append((
+            h_hat_i, confint_lower_bound, confint_upper_bound,
+            h0_chi2_pval, h0_chi2_stat, ml_loglik, h0_loglik))
+    columns = ('h', 'cint_low', 'cint_high', 'pval', 'chi2_stat', 'ml_loglik',
+               'h0_loglik')
+    out_df = pd.DataFrame(output_tuples, columns=columns)
+    return out_df
 
 
 def match_signatures(W1, W2):
