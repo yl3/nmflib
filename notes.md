@@ -134,3 +134,10 @@ It was confirmed empirically that the R and scipy formulations are the same.
     Out[2]: array([0.09375   , 0.10546875, 0.10546875])
 
 The only way the formulations differ is that the success and failure probabilities are flipped. Thus, we just need to flip the probability when we use the Scipy function.
+
+
+## Profile likelihood confidence intervals.
+
+Wilks' theorem states that $2 (l(\hat{\theta}) - l(\theta_0)) \sim \chi^2_{d}$, where $d$ is the difference in free parameters between $\hat{\theta}$ and $\theta$. Thus, asymptotically $1 - \alpha$ of the time, $2 (l(\hat{\theta}) - l(\theta_0)) \le c$, where $\Pr(X <= c) = 1 - \alpha$, when $X \sim \chi^2_d$. Since in profile likelihood, $\hat{\theta}$ is "known" and fixed, we get the following condition for the confidence interval of $\hat{\theta}$.
+
+$$l(\theta_0) \ge l(\hat{\theta}) - c / 2$$
