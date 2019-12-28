@@ -516,7 +516,7 @@ def gof(X, X_exp, sim_count=None, random_state=None, r=None, n_processes=1):
         sim_logliks = _sim_loglik_helper_func((X, sim_count, X_exp, r, p))
         sim_logliks = np.array(sim_logliks)
     else:
-        process_pool = multiprocessing.Pool(n_processes)
+        process_pool = multiprocessing.get_context("spawn").Pool(n_processes)
         args_list = [(X, sim_count, X_exp, r, p)] * n_processes
         sim_logliks = process_pool.imap_unordered(_sim_loglik_helper_func,
                                                   args_list)
@@ -578,13 +578,13 @@ def fit(
     X = _validate_is_ndarray(X)
     S = _validate_is_ndarray(S)
     O = _validate_is_ndarray(O)  # noqa: E741
-    if copy_mats:
-        # Make a copy of all the mutable variables.
-        X = X.copy()
-        if S is not None:
-            S = S.copy()
-        if O is not None:
-            O = O.copy()  # noqa: E741
+#     if copy_mats:
+#         # Make a copy of all the mutable variables.
+#         X = X.copy()
+#         if S is not None:
+#             S = S.copy()
+#         if O is not None:
+#             O = O.copy()  # noqa: E741
     W, H = sklearn.decomposition._nmf._initialize_nmf(X,
                                                       k,
                                                       'random',
@@ -701,7 +701,7 @@ def mpfit(
         for i in range(random_inits):
             args_list.append((X, k, S, O, nbinom_fit, nb_fit_freq_base,
                               max_iter, abstol, False, random_state + i, True))
-    process_pool = multiprocessing.Pool(n_processes)
+    process_pool = multiprocessing.get_context("spawn").Pool(n_processes)
     if verbose:
         fitted_res = list(
             tqdm.tqdm(process_pool.imap_unordered(unpack_args_fit, args_list),
