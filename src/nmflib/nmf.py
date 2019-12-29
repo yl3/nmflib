@@ -277,7 +277,8 @@ def _iterate_nmf_fit(
         S=None,
         O=None,  # noqa: 471
         r=None,
-        r_fit_method=None):
+        r_fit_method=None,
+        update_W=True):
     """Perform a single iteration of W, H and r updates.
 
     The goal is to approximate X ~ nbinom((WH + O) * S, r).
@@ -305,7 +306,8 @@ def _iterate_nmf_fit(
     if r_fit_method not in (None, 'ml', 'mm'):
         raise ValueError('r_fit_method must be in (None, "ml", "mm").')
 
-    W = _multiplicative_update_W(X, W, H, S, O, r)
+    if update_W:
+        W = _multiplicative_update_W(X, W, H, S, O, r)
     H = _multiplicative_update_H(X, W, H, S, O, r)
     mu = _nmf_mu(W, H, S, O)
     if r_fit_method is not None:
@@ -380,7 +382,7 @@ def fit_nbinom_nmf_r_ml(X, mu, r_init, reltol=0.001):
     return r, n_iter
 
 
-def loglik(X, X_exp, r=None):
+def loglik(X, X_exp=None, r=None, W=None, H=None, S=None, O=None):  # noqa: E741
     """Compute poisson or negative binomial log-likelihood.
 
     Args:
@@ -388,10 +390,24 @@ def loglik(X, X_exp, r=None):
         X_exp (numpy.ndarray): A nonnegative matrix for expected values of X.
         r (float): If provided, then negative binomial log-likelihood is
             computed using `r` as the dispersion parameter.
+        W (numpy.ndarray): A nonnegative signatures matrix of shape (M, k).
+        H (numpy.ndarray): A nonnegative exposures matrix of shape (k, N).
+        S (numpy.ndarray): A nonnegative scaling matrix of shape (M, N). Ignored
+            if `X_exp` is provided.
+        O (numpy.ndarray): A nonnegative offset matrix of shape (M, N). Ignored
+            if `X_exp` is provided.
+
+    Note:
+        Either `X_exp` or `W` and `H` must be provided.
 
     Returns:
         numpy.ndarray: The log-likelihood for each element in X.
     """
+    if X_exp is None:
+        if W is None or H is None:
+            raise ValueError("Either 'X_exp' or both W and H must be provided.")
+        else:
+            X_exp = _nmf_mu(W, H, S, O)
     if r is None:
         logliks = scipy.stats.poisson.logpmf(X, X_exp)
     else:
@@ -529,15 +545,18 @@ def gof(X, X_exp, sim_count=None, random_state=None, r=None, n_processes=1):
 
 def fit(
         X,
-        k,
+        k=None,
         S=None,
         O=None,  # noqa: E741
         nbinom_fit=False,
         nb_fit_freq_base=1.5,
-        max_iter=200,
+        max_iter=1000,
         abstol=1e-4,
         verbose=False,
-        random_state=None):
+        random_state=None,
+        W_fixed=None,
+        H_init=None,
+        r=None):
     """Fit KL-NMF using multiplicative updates.
 
     Args:
@@ -558,6 +577,12 @@ def fit(
             the log-space of likelihood).
         verbose (bool): Whether to print progress updates every 10 iterations.
         random_state (int): The random seed to use in NMF initialisation.
+        W_fixed (numpy.ndarray): A matrix of shape (M, k). If provided, then
+            W is not updated but this matrix is used as a constant W instead.
+        H_init (numpy.ndarray): The initial H matrix values.
+        r (float): If `nbinom_fit` is `False`, then this value is used as the
+            constant overdispersion parameter for negative binomial NMF. If
+            `nbinom_fit` is True, this parameter is ignored.
 
     Returns:
         numpy.ndarray: The fitted W matrix of shape (M, k). The matrix is scaled
@@ -569,18 +594,31 @@ def fit(
         int: Number of iterations used.
         list: A list of errors recorded every 10 iterations.
     """
+    if k is None and W_fixed is None:
+        raise ValueError("'r' must be provided if 'W_fixed' is not.")
+    elif k is None:
+        k = W_fixed.shape[1]
+
+    # Make sure the matrices are numpy arrays.
     X = _validate_is_ndarray(X)
     S = _validate_is_ndarray(S)
     O = _validate_is_ndarray(O)  # noqa: E741
+
+    # Initialise W and H.
     W, H = sklearn.decomposition._nmf._initialize_nmf(X,
                                                       k,
                                                       'random',
                                                       random_state=random_state)
-    X_exp = _nmf_mu(W, H, S, O)
-    if nbinom_fit:
-        r = _initialise_nb_r(X, X_exp)
+    if W_fixed is not None:
+        update_W = False
+        W = W_fixed
     else:
-        r = None
+        update_W = True
+    if H_init is not None:
+        H = H_init
+    if nbinom_fit:
+        X_exp = _nmf_mu(W, H, S, O)
+        r = _initialise_nb_r(X, X_exp)
 
     # Set up initial values.
     start_time = time.time()
@@ -596,13 +634,13 @@ def fit(
     WH_converged = False
     while n_iter < max_iter:
         if nbinom_fit and (WH_converged or n_iter == next_r_update):
-            W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, r_fit_method='ml')
+            W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, 'ml', update_W)
             r_updates += 1
             next_r_update = n_iter + int(nb_fit_freq_base**r_updates)
             if verbose:
                 logging.info(f'Updated r to {r}')
         else:
-            W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, r_fit_method=None)
+            W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, None, update_W)
         n_iter += 1
 
         # Test for convergence every 10 iterations.
@@ -634,9 +672,10 @@ def fit(
         logging.warning("Maximum iteration reached.")
 
     # Scale W and H such that W columns sum to 1.
-    W_colsums = np.sum(W, axis=0)
-    W /= W_colsums[np.newaxis, :]
-    H *= W_colsums[:, np.newaxis]
+    if update_W:
+        W_colsums = np.sum(W, axis=0)
+        W /= W_colsums[np.newaxis, :]
+        H *= W_colsums[:, np.newaxis]
     return W, H, r, n_iter, errors
 
 
@@ -697,6 +736,307 @@ def mpfit(
         fitted_res = list(
             process_pool.imap_unordered(unpack_args_fit, args_list))
     return fitted_res
+
+
+def hk_lrt(
+        x_obs,
+        W,
+        sig_idx,
+        S=None,
+        O=None,  # noqa: E741
+        r=None,
+        h_hat=None,
+        fit_kwargs=None):
+    """Compute LRT for whether exposure of signature `sig_idx` is zero.
+
+    Args:
+        x_obs (numpy.ndarray): 1D array of observed mutation counts across M
+            mutation types.
+        W (numpy.ndarray): A signatures matrix of shape (M, k).
+        sig_idx (int): Which signature with the statistics be computed on?
+        r (float): If provided, negative binomial model will be used.
+        h_hat (numpy.ndarray): 1D array of previously fitted signature exposures
+            across k signatures.
+        fit_kwargs (dict): Additional keyword arguments for :func:`fit`.
+
+    Returns:
+        float: Likelihood ratio test P value.
+        float: (Asymptotic) Chi-squared test statistic for the likelihood ratio.
+        float: Log-likelihood of the (provided or fitted) ML exposures vector.
+        float: Profile log-likelihood for exposure of signature `sig_idx` being
+            zero.
+        numpy.ndarray: The restricted maximum-likelihood estimate of `h`.
+    """
+    # Initialise some arguments.
+    if fit_kwargs is None:
+        fit_kwargs = {}
+    M, k = W.shape
+
+    # Convert variables into appropriate column vectors.
+    x_obs = x_obs.reshape(-1, 1)
+    if h_hat is not None:
+        h_hat = h_hat.reshape(-1, 1)
+    else:
+        _, h_hat, _, _, _ = fit(x_obs,
+                                None,
+                                S,
+                                O,
+                                W_fixed=W,
+                                r=r,
+                                **fit_kwargs)
+
+    # Overall ML log-likelihood.
+    ml_loglik = np.sum(loglik(x_obs, None, r, W, h_hat, S, O))
+
+    # Calculate log-likelihood and LRT for the exposure of signature k being 0.
+    W_fixed = W[:, np.arange(k) != sig_idx]
+    h = h_hat[np.arange(k) != sig_idx]
+    _, profile_h_hat, _, _, _ = fit(x_obs,
+                                    None,
+                                    S,
+                                    O,
+                                    W_fixed=W_fixed,
+                                    H_init=h,
+                                    r=r,
+                                    **fit_kwargs)
+    restricted_h_hat = h_hat.copy()
+    restricted_h_hat[sig_idx] = 0
+    restricted_h_hat[np.arange(k) != sig_idx] = profile_h_hat
+    h0_loglik = np.sum(loglik(x_obs, None, r, W, restricted_h_hat, S, O))
+    h0_chi2_stat = max(2 * (ml_loglik - h0_loglik), 0.0)
+    h0_chi2_pval = 1 - scipy.stats.chi2.cdf(h0_chi2_stat, 1)
+
+    return (h0_chi2_pval, h0_chi2_stat, ml_loglik, h0_loglik,
+            restricted_h_hat.reshape(-1))
+
+
+class _NMFProfileLoglikFitter:
+    """
+    Helper class that provides a h_i -> profile log-likelihood function.
+
+    Args:
+        x_obs (numpy.ndarray): A column matrix of shape (M, 1).
+        W (numpy.ndarray): A matrix of signatures of shape (M, k).
+        h_hat (numpy.ndarray): A column matrix of maximum likelihood estimates
+            for exposures. Shape is (k, 1).
+        sig_idx (numpy.ndarray): Index in h_hat or W columns for which profile
+            likelihood is to be computed.
+        S (numpy.ndarray): A column matrix of scales of shape (M, 1).
+        O (numpy.ndarray): A column matrix of offsets of shape (M, 1).
+        r (float): Fixed dispersion parameter for negative binomial NMF
+            optimisation. If not provided, then Poisson-NMF is used instead.
+        fit_kwargs (dict): Additional keyword arguments for :func:`fit`.
+    """
+    def __init__(
+            self,
+            x_obs,
+            W,
+            h_hat,
+            sig_idx,
+            S=None,
+            O=None,  # noqa: E741
+            r=None,
+            **fit_kwargs):
+        self.x = x_obs
+        sel = np.arange(W.shape[1]) != sig_idx
+        self.W_nuisance = W[:, sel]
+        self.Wi = W[:, [sig_idx]]
+        self.h_nuisance = h_hat[sel, :]
+        self.hi = h_hat[sig_idx, 0]
+        self.S = S
+        self.O = O  # noqa: E741
+        self.r = r
+        self.fit_kwargs = fit_kwargs
+
+    def _profile_ml(self, cur_hi):
+        """Compute the profile maximum log-likelihood for cur_h_idx.
+
+        Args:
+            cur_hi (float): Current value for h_i, which is the exposure for
+                signature W_i.
+
+        Returns:
+            float: Maximum log-likelihood with the restriction that
+                h[self.sig_idx] == cur_hi.
+        """
+        O_plus_Whi = self.Wi * cur_hi
+        if self.O is not None:
+            O_plus_Whi += self.O
+        _, h_nuisance_hat, _, _, _ = fit(self.x,
+                                         None,
+                                         self.S,
+                                         O_plus_Whi,
+                                         W_fixed=self.W_nuisance,
+                                         H_init=self.h_nuisance,
+                                         r=self.r,
+                                         **self.fit_kwargs)
+        profile_ml = np.sum(
+            loglik(self.x, None, self.r, self.W_nuisance, h_nuisance_hat,
+                   self.S, O_plus_Whi))
+        return profile_ml
+
+
+def hk_confint(
+        x_obs,
+        W,
+        sig_idx,
+        S=None,
+        O=None,  # noqa: E741
+        alpha=0.05,
+        r=None,
+        h_hat=None,
+        brentq_xtol=1e-5,
+        brentq_rtol=1e-5,
+        fit_kwargs=None):
+    """Compute LRT and confidence intervals for a signature's exposure.
+
+    Compute the likelihood-ratio test for the null hypothesis that signature `k`
+    has zero exposure. Then compute the (1 - `alpha`)-confidence interval for
+    the estimated exposure value.
+
+    Args:
+        x_obs (numpy.ndarray): 1D array of observed mutation counts across M
+            mutation types.
+        W (numpy.ndarray): A signatures matrix of shape (M, k).
+        sig_idx (int): Which signature with the statistics be computed on?
+        alpha (float): The cumulative probability that should lie outside the
+            confidence intervals (in total for both sides).
+        r (float): If provided, negative binomial model will be used.
+        h_hat (numpy.ndarray): 1D array of previously fitted signature exposures
+            across k signatures.
+        brentq_xtol (float): Parameter `xtol` for :func:`scipy.optimize.brentq`.
+        brentq_rtol (float): Parameter `rtol` for :func:`scipy.optimize.brentq`.
+        fit_kwargs (dict): Additional keyword arguments for :func:`fit`.
+
+    Returns:
+        float: Estimated or provided exposure of signature `sig_idx`.
+        float: Lower end of the confidence interval.
+        float: Upper end of the confidence interval.
+        float: Likelihood ratio test P value.
+        float: (Asymptotic) Chi-squared test statistic for the likelihood ratio.
+        float: Log-likelihood of the (provided or fitted) ML exposures vector.
+        float: Profile log-likelihood for exposure of signature `sig_idx` being
+            zero.
+        float: :cls:`scipy.stats.RootResults` of the lower bound root finding.
+        float: :cls:`scipy.stats.RootResults` of the upper bound root finding.
+    """
+    # Convert variables into appropriate column vectors.
+    x_obs = x_obs.reshape(-1, 1)
+    if fit_kwargs is None:
+        fit_kwargs = {}
+    if h_hat is not None:
+        h_hat = h_hat.reshape(-1, 1)
+    else:
+        _, h_hat, _, _, _ = fit(x_obs,
+                                None,
+                                S,
+                                O,
+                                W_fixed=W,
+                                r=r,
+                                **fit_kwargs)
+
+    # Compute LRT for signature sig_idx having zero exposure.
+    h0_chi2_pval, h0_chi2_stat, ml_loglik, h0_loglik, _ = hk_lrt(
+        x_obs, W, sig_idx, S, O, r, h_hat, fit_kwargs)
+
+    # Calculate the minimum null hypothesis log-likelihood to be considered to
+    # be within the alpha-confidence interval.
+    chisq_cutoff = scipy.stats.chi2.ppf(1 - alpha, 1)
+    h0_loglik_cutoff = ml_loglik - chisq_cutoff / 2
+
+    # Compute the lower end of the confidence interval. First check if zero
+    # is included in the confidence interval.
+    if h0_loglik >= h0_loglik_cutoff:
+        confint_lower_bound = 0
+        r_lower_bound = None
+    else:
+        target_f = _NMFProfileLoglikFitter(x_obs, W, h_hat, sig_idx, S, O, r,
+                                           **fit_kwargs)._profile_ml
+        confint_lower_bound, r_lower_bound = scipy.optimize.brentq(
+            lambda h_i: target_f(h_i) - h0_loglik_cutoff,
+            h_hat[sig_idx, 0],
+            0,
+            xtol=brentq_xtol,
+            rtol=brentq_rtol,
+            full_output=True,
+            disp=True)
+
+    # Compute the upper end of the confidence interval.
+    target_f = _NMFProfileLoglikFitter(x_obs, W, h_hat, sig_idx, S, O, r,
+                                       **fit_kwargs)._profile_ml
+    upper_bound_upper_bound = np.sum(x_obs)
+    while target_f(upper_bound_upper_bound) - h0_loglik_cutoff > 0:
+        upper_bound_upper_bound *= 2
+    confint_upper_bound, r_upper_bound = scipy.optimize.brentq(
+        lambda h_i: target_f(h_i) - h0_loglik_cutoff,
+        h_hat[sig_idx, 0],
+        upper_bound_upper_bound,
+        xtol=brentq_xtol,
+        rtol=brentq_rtol,
+        full_output=True,
+        disp=True)
+
+    return (h_hat[sig_idx, 0], confint_lower_bound, confint_upper_bound,
+            h0_chi2_pval, h0_chi2_stat, ml_loglik, h0_loglik, r_lower_bound,
+            r_upper_bound)
+
+
+def h_confint(
+        x_obs,
+        W,
+        S=None,
+        O=None,  # noqa: E741
+        alpha=0.05,
+        r=None,
+        h_hat=None,
+        brentq_xtol=1e-5,
+        brentq_rtol=1e-5,
+        fit_kwargs=None):
+    """Compute LRT and confidence intervals for each signature's exposure.
+
+    Compute the likelihood-ratio test for the null hypothesis for each signature
+    that the signature's exposure is zero. Then compute the (1 - `alpha`)-
+    confidence interval for the estimated exposure value.
+
+    Args:
+        x_obs (numpy.ndarray): 1D array of observed mutation counts across M
+            mutation types.
+        W (numpy.ndarray): A signatures matrix of shape (M, k).
+        alpha (float): The cumulative probability that should lie outside the
+            confidence intervals (in total for both sides).
+        r (float): If provided, negative binomial model will be used.
+        h_hat (numpy.ndarray): 1D array of previously fitted signature exposures
+            across k signatures.
+        brentq_xtol (float): Parameter `xtol` for :func:`scipy.optimize.brentq`.
+        brentq_rtol (float): Parameter `rtol` for :func:`scipy.optimize.brentq`.
+        fit_kwargs (dict): Additional keyword arguments for :func:`fit`.
+
+    Returns:
+        pandas.DataFrame: A data frame of confidence intervals and likelihood
+            ratio results.
+    """
+    if h_hat is None:
+        _, h_hat, _, _, _ = fit(x_obs,
+                                None,
+                                S,
+                                O,
+                                W_fixed=W,
+                                r=r,
+                                **fit_kwargs)
+        h_hat = h_hat.reshape(-1)  # hk_confint() requires an 1D array.
+    output_tuples = []
+    for sig_idx in range(len(h_hat)):
+        output_tuple = hk_confint(x_obs, W, sig_idx, S, O, alpha, r, h_hat,
+                                  brentq_xtol, brentq_rtol, fit_kwargs)
+        (h_hat_i, confint_lower_bound, confint_upper_bound, h0_chi2_pval,
+         h0_chi2_stat, ml_loglik, h0_loglik, _, _) = output_tuple
+        output_tuples.append((
+            h_hat_i, confint_lower_bound, confint_upper_bound,
+            h0_chi2_pval, h0_chi2_stat, ml_loglik, h0_loglik))
+    columns = ('h', 'cint_low', 'cint_high', 'pval', 'chi2_stat', 'ml_loglik',
+               'h0_loglik')
+    out_df = pd.DataFrame(output_tuples, columns=columns)
+    return out_df
 
 
 def match_signatures(W1, W2):

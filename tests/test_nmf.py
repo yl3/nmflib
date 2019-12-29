@@ -24,6 +24,7 @@ class SimpleNMFData:
                   [0, 20, 12, 60]])
     W_true = np.array([[.5, 0.4], [.5, 0], [0, 0.2], [0, 0.4]])
     H_true = np.array([[30, 40, 0, 50], [0, 50, 30, 150]])
+    k = W_true.shape[1]
 
     @classmethod
     def check_answer(cls, W, H):
@@ -372,10 +373,10 @@ def test_parallel_gof(datafiles):
 
     # Measure time with and without multiprocessing.
     start_time = time.time()
-    mp_res = nmflib.nmf.gof(X_obs, X_exp, 100, r=true_r, n_processes=2)
+    nmflib.nmf.gof(X_obs, X_exp, 100, r=true_r, n_processes=2)
     multiprocess_elapsed = time.time() - start_time
     start_time = time.time()
-    sp_res = nmflib.nmf.gof(X_obs, X_exp, 200, r=true_r, n_processes=1)
+    nmflib.nmf.gof(X_obs, X_exp, 200, r=true_r, n_processes=1)
     single_process_elapsed = time.time() - start_time
     assert single_process_elapsed / multiprocess_elapsed > 1.2
 
@@ -389,3 +390,62 @@ def test_validate_is_ndarray():
     assert isinstance(nmflib.nmf._validate_is_ndarray(df), np.ndarray)
     with pytest.raises(ValueError):
         nmflib.nmf._validate_is_ndarray("Not an array")
+
+
+def test_h_confint():
+    """Test LRT and confidence interval computation.
+
+    Tests nmf.hk_confint() and nmf.hk_lrt() also.
+    """
+    simple_nmf_data = SimpleNMFData()
+    W, H, _, _, _ = nmflib.nmf.fit(simple_nmf_data.X, SimpleNMFData.k)
+    idx = nmflib.nmf.match_signatures(simple_nmf_data.W_true, W)
+    W = W[:, idx]
+    H = H[idx, :]
+
+    # Sample 3 has none of signature 1 but only signature 2. Check that
+    # - P value for exposure = 0 should be "insignificant".
+    # - The lower confidence interval should include 0.
+    # - The upper confidence interval should roughly have a LRT P-value of 0.05.
+    sig_idx = 0
+    sample_idx = 2
+    x_obs = simple_nmf_data.X[:, sample_idx]
+    h_hat = H[:, sample_idx]
+    output_tuple = nmflib.nmf.hk_confint(x_obs, W, sig_idx, h_hat=h_hat)
+    _, cint_low, cint_high, pval, _, ml_loglik, restricted_loglik, _, _ = \
+        output_tuple
+    assert pval > 0.2
+    assert cint_low == 0
+    target_f = nmflib.nmf._NMFProfileLoglikFitter(x_obs.reshape(-1, 1), W,
+                                                  h_hat.reshape(-1, 1),
+                                                  sig_idx)._profile_ml
+    cint_high_loglik = target_f(cint_high)
+    chi2_stat = 2 * (ml_loglik - cint_high_loglik)
+    assert 0.949 <= scipy.stats.chi2.cdf(chi2_stat, 1) <= 0.951
+
+    # Similarly, 3 has strong exposure of signature 2.
+    # - P value for exposure = 0 should be "significant".
+    # - The lower confidence interval should not 0.
+    # - The lower and upper confidence intervals should roughly have a
+    #   LRT P-value of 0.05.
+    # - The restricted log-likelihood should be smaller than the unrestricted
+    #   maximum likelihood.
+    sig_idx = 1
+    sample_idx = 2
+    x_obs = simple_nmf_data.X[:, sample_idx]
+    h_hat = H[:, sample_idx]
+    output_tuple = nmflib.nmf.hk_confint(x_obs, W, sig_idx, h_hat=h_hat)
+    _, cint_low, cint_high, pval, _, ml_loglik, restricted_loglik, _, _ = \
+        output_tuple
+    assert ml_loglik > restricted_loglik
+    assert pval < 0.01
+    assert cint_low > 0
+    target_f = nmflib.nmf._NMFProfileLoglikFitter(x_obs.reshape(-1, 1), W,
+                                                  h_hat.reshape(-1, 1),
+                                                  sig_idx)._profile_ml
+    cint_low_loglik = target_f(cint_low)
+    chi2_stat = 2 * (ml_loglik - cint_low_loglik)
+    assert 0.949 <= scipy.stats.chi2.cdf(chi2_stat, 1) <= 0.951
+    cint_high_loglik = target_f(cint_high)
+    chi2_stat = 2 * (ml_loglik - cint_high_loglik)
+    assert 0.949 <= scipy.stats.chi2.cdf(chi2_stat, 1) <= 0.951
