@@ -859,7 +859,9 @@ class _NMFProfileLoglikFitter:
             float: Maximum log-likelihood with the restriction that
                 h[self.sig_idx] == cur_hi.
         """
-        O_plus_Whi = self.O + self.Wi * cur_hi
+        O_plus_Whi = self.Wi * cur_hi
+        if self.O is not None:
+            O_plus_Whi += self.O
         _, h_nuisance_hat, _, _, _ = fit(self.x,
                                          None,
                                          self.S,
@@ -907,13 +909,14 @@ def hk_confint(
         fit_kwargs (dict): Additional keyword arguments for :func:`fit`.
 
     Returns:
+        float: Estimated or provided exposure of signature `sig_idx`.
+        float: Lower end of the confidence interval.
+        float: Upper end of the confidence interval.
+        float: Likelihood ratio test P value.
+        float: (Asymptotic) Chi-squared test statistic for the likelihood ratio.
         float: Log-likelihood of the (provided or fitted) ML exposures vector.
         float: Profile log-likelihood for exposure of signature `sig_idx` being
             zero.
-        float: (Asymptotic) Chi-squared test statistic for the likelihood ratio.
-        float: Likelihood ratio test P value.
-        float: Lower end of the confidence interval.
-        float: Upper end of the confidence interval.
         float: :cls:`scipy.stats.RootResults` of the lower bound root finding.
         float: :cls:`scipy.stats.RootResults` of the upper bound root finding.
     """
