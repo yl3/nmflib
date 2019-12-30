@@ -12,7 +12,6 @@ import numpy as np
 import pandas as pd
 import scipy.optimize
 from scipy.special import digamma, polygamma
-import sklearn.decomposition._nmf
 import sklearn.metrics.pairwise
 
 import nmflib.constants
@@ -27,6 +26,32 @@ def _ensure_pos(arr, epsilon=np.finfo(np.float32).eps, inplace=True):
         arr2 = arr.copy()
         arr2[sel] = epsilon
         return arr2
+
+
+def initialise_nmf(X, k, random_state=None):
+    """Initialise count NMF.
+
+    W is initialised from a flat Dirichlet distribution and H is initialised by
+    uniformly distributing the counts across all *k* signatures.
+
+    Args:
+        X (numpy.ndarray): Matrix of shape (M, N) to be decomposed.
+        k (int): Rank of the intended NMF model.
+        random_state (int): Optional random state.
+
+    Returns
+        numpy.ndarray: Randomised matrix W of shape (M, k), where each column
+            is drawn from a Dirichlet distribution with alpha = 1.
+        numpy.ndarray: Randomised matrix H of shape (k, N), where the columns
+            are sampled from a flat multinomial distribution with the total
+            mutation count equal to the corresponding row sums in X.
+    """
+    np.random.seed(random_state)
+    M, N = X.shape
+    W = scipy.stats.dirichlet.rvs([1] * M, size=k).T
+    H = np.array([scipy.stats.multinomial.rvs(mut_count, [1 / k] * k)
+                  for mut_count in np.sum(X, 0)]).T
+    return W, H
 
 
 def _validate_is_ndarray(arr):
@@ -609,10 +634,7 @@ def fit(
     O = _validate_is_ndarray(O)  # noqa: E741
 
     # Initialise W and H.
-    W, H = sklearn.decomposition._nmf._initialize_nmf(X,
-                                                      k,
-                                                      'random',
-                                                      random_state=random_state)
+    W, H = initialise_nmf(X, k, random_state=random_state)
     if W_fixed is not None:
         update_W = False
         W = W_fixed

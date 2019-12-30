@@ -109,6 +109,21 @@ class SyntheticPCAWG():
         self.O = O  # noqa: E741
 
 
+@pytest.mark.datafiles('test_data/ground.truth.syn.catalog.csv.gz',
+                       'test_data/ground.truth.syn.sigs.csv.gz',
+                       'test_data/ground.truth.syn.exposures.csv.gz')
+def test_initialise_nmf(datafiles):
+    """Test nmf.initialise_nmf()."""
+    X = SyntheticPCAWG(datafiles).simulate()
+    M, N = X.shape
+    k = 21
+    W_init, H_init = nmflib.nmf.initialise_nmf(X, k)
+    assert W_init.shape == (M, k)
+    assert H_init.shape == (k, N)
+    assert np.allclose(np.sum(W_init, 0), 1)
+    assert np.all(np.sum(H_init, 0) == np.sum(X, 0))
+
+
 def test_fit_nmf(caplog):
     """Test fitting a regular NMF."""
     caplog.set_level(logging.INFO)
