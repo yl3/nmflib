@@ -633,6 +633,7 @@ def fit(
         W_init=None,
         H_init=None,
         r=None,
+        epoch_len=10,
         max_iter_warn=True):
     """Fit KL-NMF or nbinom-NMF using multiplicative updates.
 
@@ -702,8 +703,8 @@ def fit(
             W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, None, update_W)
         n_iter += 1
 
-        # Test for convergence every 10 iterations.
-        if n_iter % 10 == 0:
+        # Test for convergence every epoch_len iterations.
+        if n_iter % epoch_len == 0:
             X_exp = _nmf_mu(W, H, S, O)
             error = _divergence(X, X_exp, r)
             errors.append(error)
@@ -890,6 +891,7 @@ def fit_steepest(
     X = _validate_is_ndarray(X)
     S = _validate_is_ndarray(S)
     O = _validate_is_ndarray(O)  # noqa: E741
+    M, N = X.shape
 
     k, W, H, r, update_W = _init_nmf_params(X, k, S, O, W_fixed, W_init, H_init,
                                             nbinom_fit, r, random_state)
@@ -904,10 +906,6 @@ def fit_steepest(
     WH_converged = False
 
     while n_epoch < max_epoch:
-        # 1. Run an epoch's worth of iterations.
-        # 2. Note top improving columns and rows.
-        # 3. Fit the submatrix until the fit is sufficiently low.
-        # 4. Go back to 1.
         for _ in range(epoch_len):
             if nbinom_fit and (WH_converged or n_iter == next_r_update):
                 W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, 'ml', update_W)
@@ -932,7 +930,7 @@ def fit_steepest(
                     n_iter, elapsed, error))
         if prev_error is not None and prev_error - error < 0:
             msg = ("Iteration {} after {:.3f}, error increased from {} to "
-                    "{} seconds: error increased.".format(
+                   "{} seconds: error increased.".format(
                         n_iter, elapsed, prev_error, error))
             logging.warning(msg)
         if prev_error is None:
@@ -951,35 +949,54 @@ def fit_steepest(
             else:
                 # The section where both WH and r have converged.
                 break
-        elif fit_submat:
+        elif fit_submat and not WH_converged:
             # If WH has not converged yet, identify and exhaustively update
             # a submatrix of X.
-            error_diff_mat = previous_error_mat - error_mat
-            outlier_rows = _get_zscore_outlier_idx(np.sum(error_diff_mat, 1))
-            outlier_cols = _get_zscore_outlier_idx(np.sum(error_diff_mat, 0))
-
+            median_error_loss = max(
+                np.median(previous_error_mat - error_mat),
+                abstol / np.prod(X.shape))
+            W_row_tol = median_error_loss * k
+            H_col_tol = median_error_loss * k
+            update_W_rows = np.arange(M)
+            update_H_cols = np.arange(N)
             n_subiter = 0
             while True:
-                for _ in range(epoch_len):
-                    if len(outlier_rows) > 0:
-                        W[outlier_rows, :] = _multiplicative_update_W(
-                            X[outlier_rows, :], W[outlier_rows, :], H,
-                            S[outlier_rows, :], O[outlier_rows, :], r)
-                    if len(outlier_cols) > 0:
-                        H[:, outlier_cols] = _multiplicative_update_H(
-                            X[:, outlier_cols], W, H[:, outlier_cols],
-                            S[:, outlier_cols], O[:, outlier_cols], r)
+                for _ in range(epoch_len * 10):
+                    if len(update_W_rows) > 0:
+                        W[update_W_rows, :] = _multiplicative_update_W(
+                            X[update_W_rows, :], W[update_W_rows, :], H,
+                            S[update_W_rows, :], O[update_W_rows, :], r)
+                    if len(update_H_cols) > 0:
+                        H[:, update_H_cols] = _multiplicative_update_H(
+                            X[:, update_H_cols], W, H[:, update_H_cols],
+                            S[:, update_H_cols], O[:, update_H_cols], r)
                     n_subiter += 1
-                error = np.sum(_divergence(X, _nmf_mu(W, H, S, O), r, True))
-                if prev_error - error < abstol * 10:
+
+                # Compute improved error.
+                X_exp = _nmf_mu(W, H, S, O)
+                error_mat = _divergence(X, X_exp, r, True)
+                error_diff_mat = previous_error_mat - error_mat
+                if verbose > 1:
+                    logging.info(
+                        "After updating {} rows in W and {} columns in H, "
+                        "error decreased by {}".format(
+                            len(update_W_rows), len(update_H_cols),
+                            np.sum(error_diff_mat)))
+                previous_error_mat = error_mat
+
+                # Compute the new indices to be updated.
+                W_idx = np.sum(error_diff_mat[update_W_rows, :], 1) > W_row_tol
+                update_W_rows = update_W_rows[W_idx]
+                H_idx = np.sum(error_diff_mat[:, update_H_cols], 0) > H_col_tol
+                update_H_cols = update_H_cols[H_idx]
+                if len(update_W_rows) == len(update_H_cols) == 0:
                     break
-                prev_error = error
+            error = _divergence(X, _nmf_mu(W, H, S, O), r)
             if verbose:
                 elapsed = time.time() - start_time
-                msg = ("After fitting {} rows of W and {} columns of H for "
-                       "{} iterations after {:.3f} seconds, error is {}"
-                       .format(len(outlier_rows), len(outlier_cols), n_subiter,
-                               elapsed, error))
+                msg = ("After fitting W and H submatrices for {} iterations "
+                       "after {:.3f} seconds, error is {}"
+                       .format(n_subiter, elapsed, error))
                 logging.info(msg)
         previous_error_mat = error_mat
         prev_error = error
