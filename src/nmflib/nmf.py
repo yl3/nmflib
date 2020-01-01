@@ -66,7 +66,13 @@ def _validate_is_ndarray(arr):
         raise ValueError('Expected numpy.ndarray or pandas.DataFrame as type.')
 
 
-def _multiplicative_update_W(X, W, H, S=None, O=None, r=None):  # noqa: E741
+def _multiplicative_update_W(X,
+                             W,
+                             H,
+                             S=None,
+                             O=None,  # noqa: E741
+                             r=None,
+                             step_size_multiplier=1):
     """Multiplicative KL-update for W.
 
     Multiplicative update for W to maximise E[X] = (WH + O) * S.
@@ -130,12 +136,12 @@ def _multiplicative_update_W(X, W, H, S=None, O=None, r=None):  # noqa: E741
     # Compute the update
     numerator /= denominator
     delta_W = numerator
-    new_W = W * delta_W
+    new_W = W * (delta_W ** step_size_multiplier)
 
     return new_W
 
 
-def _multiplicative_update_H(X, W, H, S=None, O=None, r=None):  # noqa: 471
+def _multiplicative_update_H(X, W, H, S=None, O=None, r=None, step_size_multiplier=1):  # noqa: 471
     """Multiplicative KL-update for H.
 
     Multiplicative update for H to maximise E[X] = (WH + O) * S.
@@ -199,7 +205,7 @@ def _multiplicative_update_H(X, W, H, S=None, O=None, r=None):  # noqa: 471
     # Compute the update
     numerator /= denominator
     delta_H = numerator
-    new_H = H * delta_H
+    new_H = H * (delta_H ** step_size_multiplier)
 
     return new_H
 
@@ -312,7 +318,8 @@ def _iterate_nmf_fit(
         r_fit_method=None,
         update_W=True,
         update_w_rows=slice(None),
-        update_h_cols=slice(None)):
+        update_h_cols=slice(None),
+        step_size_multiplier=1):
     """Perform a single iteration of W, H and r updates.
 
     The goal is to approximate X ~ nbinom((WH + O) * S, r).
@@ -346,18 +353,20 @@ def _iterate_nmf_fit(
 
     if update_W:
         if update_w_rows == slice(None):
-            W = _multiplicative_update_W(X, W, H, S, O, r)
+            W = _multiplicative_update_W(X, W, H, S, O, r, step_size_multiplier)
         else:
             W[update_w_rows, :] = _multiplicative_update_W(
                 X[update_w_rows, :], W[update_w_rows, :], H,
-                S[update_w_rows, :], O[update_w_rows, :], r)
+                S[update_w_rows, :], O[update_w_rows, :], r,
+                step_size_multiplier)
     if update_h_cols == slice(None):
-        H = _multiplicative_update_H(X, W, H, S, O, r)
+        H = _multiplicative_update_H(X, W, H, S, O, r, step_size_multiplier)
     else:
         H[:, update_h_cols] = _multiplicative_update_H(X[:, update_h_cols], W,
                                                        H[:, update_h_cols],
                                                        S[:, update_h_cols],
-                                                       O[:, update_h_cols], r)
+                                                       O[:, update_h_cols], r,
+                                                       step_size_multiplier)
     if r_fit_method is not None:
         X_exp = _nmf_mu(W, H, S, O)
         if r_fit_method == 'mm':
@@ -634,7 +643,8 @@ def fit(
         H_init=None,
         r=None,
         epoch_len=10,
-        max_iter_warn=True):
+        max_iter_warn=True,
+        step_size_multiplier=1):
     """Fit KL-NMF or nbinom-NMF using multiplicative updates.
 
     Args:
@@ -694,7 +704,8 @@ def fit(
     WH_converged = False
     while n_iter < max_iter:
         if nbinom_fit and (WH_converged or n_iter == next_r_update):
-            W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, 'ml', update_W)
+            W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, 'ml', update_W,
+                                       step_size_multiplier)
             r_updates += 1
             next_r_update = n_iter + int(nb_fit_freq_base**r_updates)
             if verbose:
