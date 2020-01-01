@@ -276,7 +276,7 @@ def _nmf_mu(W, H, S=None, O=None):  # noqa: E741
     return WHOS
 
 
-def _divergence(X, X_exp, r=None):
+def _divergence(X, X_exp, r=None, elementwise=False):
     """Matrix divergence for Poisson or negative binomial."""
 
     if r is None:
@@ -288,10 +288,17 @@ def _divergence(X, X_exp, r=None):
         p = 1 - one_minus_p
         _ensure_pos(p)
         _ensure_pos(one_minus_p)
-        MN = np.prod(X.shape)
-        divergence = -(np.sum(scipy.special.gammaln(X + r)) -
-                       MN * scipy.special.gammaln(r) +
-                       r * np.sum(np.log(one_minus_p)) + np.sum(X * np.log(p)))
+        if not elementwise:
+            MN = np.prod(X.shape)
+            divergence = -(np.sum(scipy.special.gammaln(X + r)) -
+                           MN * scipy.special.gammaln(r) +
+                           r * np.sum(np.log(one_minus_p)) +
+                           np.sum(X * np.log(p)))
+        else:
+            divergence = -(scipy.special.gammaln(X + r) -
+                           scipy.special.gammaln(r) +
+                           r * np.log(one_minus_p) +
+                           X * np.log(p))
     return divergence
 
 
@@ -303,7 +310,9 @@ def _iterate_nmf_fit(
         O=None,  # noqa: 471
         r=None,
         r_fit_method=None,
-        update_W=True):
+        update_W=True,
+        update_w_rows=slice(None),
+        update_h_cols=slice(None)):
     """Perform a single iteration of W, H and r updates.
 
     The goal is to approximate X ~ nbinom((WH + O) * S, r).
@@ -330,16 +339,31 @@ def _iterate_nmf_fit(
     """
     if r_fit_method not in (None, 'ml', 'mm'):
         raise ValueError('r_fit_method must be in (None, "ml", "mm").')
+    if update_w_rows != slice(None):
+        W = W.copy()
+    if update_h_cols != slice(None):
+        H = H.copy()
 
     if update_W:
-        W = _multiplicative_update_W(X, W, H, S, O, r)
-    H = _multiplicative_update_H(X, W, H, S, O, r)
-    mu = _nmf_mu(W, H, S, O)
+        if update_w_rows == slice(None):
+            W = _multiplicative_update_W(X, W, H, S, O, r)
+        else:
+            W[update_w_rows, :] = _multiplicative_update_W(
+                X[update_w_rows, :], W[update_w_rows, :], H,
+                S[update_w_rows, :], O[update_w_rows, :], r)
+    if update_h_cols == slice(None):
+        H = _multiplicative_update_H(X, W, H, S, O, r)
+    else:
+        H[:, update_h_cols] = _multiplicative_update_H(X[:, update_h_cols], W,
+                                                       H[:, update_h_cols],
+                                                       S[:, update_h_cols],
+                                                       O[:, update_h_cols], r)
     if r_fit_method is not None:
+        X_exp = _nmf_mu(W, H, S, O)
         if r_fit_method == 'mm':
-            r, _ = fit_nbinom_nmf_r_mm(X, mu, W.shape[1])
+            r, _ = fit_nbinom_nmf_r_mm(X, X_exp, W.shape[1])
         elif r_fit_method == 'ml':
-            r, _ = fit_nbinom_nmf_r_ml(X, mu, r)
+            r, _ = fit_nbinom_nmf_r_ml(X, X_exp, r)
 
     return W, H, r
 
@@ -568,21 +592,49 @@ def gof(X, X_exp, sim_count=None, random_state=None, r=None, n_processes=1):
     return gof_D, gof_pval, sample_pvals, sim_logliks
 
 
+def _init_nmf_params(X, k, S, O, W_fixed, W_init, H_init, nbinom_fit, r,
+                     random_state):
+    """Initialise NMF parameters."""
+    if k is None and W_fixed is None:
+        raise ValueError("'k' must be provided if 'W_fixed' is not.")
+    elif k is None:
+        k = W_fixed.shape[1]
+
+    # Initialise W and H.
+    W, H = initialise_nmf(X, k, random_state=random_state)
+    if W_fixed is not None:
+        update_W = False
+        W = W_fixed
+    else:
+        update_W = True
+    if H_init is not None:
+        H = H_init
+    if W_init is not None:
+        W = W_init
+    if nbinom_fit:
+        X_exp = _nmf_mu(W, H, S, O)
+        r = _initialise_nb_r(X, X_exp)
+
+    return k, W, H, r, update_W
+
+
 def fit(
         X,
         k=None,
         S=None,
         O=None,  # noqa: E741
         nbinom_fit=False,
-        nb_fit_freq_base=1.5,
+        nb_fit_freq_base=2,
         max_iter=1000,
         abstol=1e-4,
         verbose=False,
         random_state=None,
         W_fixed=None,
+        W_init=None,
         H_init=None,
-        r=None):
-    """Fit KL-NMF using multiplicative updates.
+        r=None,
+        max_iter_warn=True):
+    """Fit KL-NMF or nbinom-NMF using multiplicative updates.
 
     Args:
         X (numpy.ndarray): A nonnegative integer matrix of shape (M, N).
@@ -595,16 +647,18 @@ def fit(
         nbinom_fit (bool): Whether to fit a negative binomial model or a default
             Poisson model.
         nb_fit_freq_base (int): A positive integer such that the number of
-            W and H iterations between consecutive r updates is
-            *nb_fit_freq_base*^<number_of_r_updates_so_far>.
+            W and H iterations between consecutive *r* updates is
+            *nb_fit_freq_base*^<number_of_r_updates_so_far>. Use 1 to update
+            *r* at each iteration.
         max_iter (int): Maximum number of iterations to use.
-        abstol (float): Absolute tolerance for convergence **per element** (in
-            the log-space of likelihood).
+        abstol (float): Absolute tolerance for convergence for log-likelihood
+            improvement.
         verbose (bool): Whether to print progress updates every 10 iterations.
         random_state (int): The random seed to use in NMF initialisation.
         W_fixed (numpy.ndarray): A matrix of shape (M, k). If provided, then
             W is not updated but this matrix is used as a constant W instead.
         H_init (numpy.ndarray): The initial H matrix values.
+        W_init (numpy.ndarray): The initial W matrix values.
         r (float): If `nbinom_fit` is `False`, then this value is used as the
             constant overdispersion parameter for negative binomial NMF. If
             `nbinom_fit` is True, this parameter is ignored.
@@ -619,30 +673,13 @@ def fit(
         int: Number of iterations used.
         list: A list of errors recorded every 10 iterations.
     """
-    if k is None and W_fixed is None:
-        raise ValueError("'r' must be provided if 'W_fixed' is not.")
-    elif k is None:
-        k = W_fixed.shape[1]
-
     # Make sure the matrices are numpy arrays.
     X = _validate_is_ndarray(X)
     S = _validate_is_ndarray(S)
     O = _validate_is_ndarray(O)  # noqa: E741
 
-    # Initialise W and H.
-    W, H = initialise_nmf(X, k, random_state=random_state)
-    if W_fixed is not None:
-        update_W = False
-        W = W_fixed
-    else:
-        update_W = True
-    if H_init is not None:
-        H = H_init
-    if nbinom_fit:
-        X_exp = _nmf_mu(W, H, S, O)
-        r = _initialise_nb_r(X, X_exp)
-
-    # Set up initial values.
+    k, W, H, r, update_W = _init_nmf_params(X, k, S, O, W_fixed, W_init, H_init,
+                                            nbinom_fit, r, random_state)
     start_time = time.time()
     previous_error = None
     errors = []
@@ -677,7 +714,7 @@ def fit(
                         n_iter, elapsed, error))
             if previous_error is None:
                 previous_error = error
-            elif (previous_error - error) / np.prod(X.shape) < abstol:
+            elif previous_error - error < abstol:
                 if nbinom_fit and not WH_converged:
                     if verbose:
                         elapsed = time.time() - start_time
@@ -690,7 +727,7 @@ def fit(
                     break
             previous_error = error
 
-    if n_iter == max_iter:
+    if max_iter_warn and n_iter == max_iter:
         logging.warning("Maximum iteration reached.")
 
     # Scale W and H such that W columns sum to 1.
@@ -758,6 +795,204 @@ def mpfit(
         fitted_res = list(
             process_pool.imap_unordered(unpack_args_fit, args_list))
     return fitted_res
+
+
+def _get_zscore_outlier_idx(x, cutoff=2):
+    """Return the indices of values in x that have a Z-score above *cutoff*.
+
+    An empty index is returned as slice(None).
+    """
+    zscores = scipy.stats.zscore(x)
+    outlier_idx = np.where(zscores > cutoff)[0]
+    return outlier_idx
+
+
+def _get_XWHSO_submats(row_idx, col_idx, X, W, H, S, O):
+    if row_idx == col_idx == slice(None):
+        raise ValueError("No indices to select, since both row_idx and col_idx "
+                         "are slice(None)")
+    X = X[row_idx, col_idx]
+    W = W[row_idx, :]
+    H = H[:, col_idx]
+    if S is not None:
+        S = S[row_idx, col_idx]
+    if O is not None:
+        O = O[row_idx, col_idx]  # noqa: E741
+    return X, W, H, S, O
+
+
+def fit_steepest(
+        X,
+        k=None,
+        S=None,
+        O=None,  # noqa: E741
+        nbinom_fit=False,
+        epoch_len=10,
+        max_epoch=100,
+        nb_fit_freq_base=2,
+        abstol=1e-4,
+        verbose=False,
+        random_state=None,
+        W_fixed=None,
+        W_init=None,
+        H_init=None,
+        r=None,
+        fit_submat=False):
+    """
+    Fit KL-NMF or nbinom-NMF using steepest descent block coordinate descent.
+
+    Args:
+        X (numpy.ndarray): A nonnegative integer matrix of shape (M, N).
+        k (int): A positive integer for the number of signatures to use.
+        S (numpy.ndarray): A matrix of values [0, 1] of shape (M, N) indicating
+            the proportion of mutations of each of the M contexts that cannot be
+            observed.
+        O (numpy.ndarray): A matrix of nonnegative values of shape (M, N),
+            representing the additive offset term.
+        nbinom_fit (bool): Whether to fit a negative binomial model or a default
+            Poisson model.
+        epoch_len (int): Number of NMF update iterations per epoch on the full
+            X. Note that updates on the X submatrices are not counted.
+        max_epoch (int): Maximum number of epochs on the full X matrix to run.
+        nb_fit_freq_base (int): A positive integer such that the number of
+            W and H iterations between consecutive *r* updates is
+            *nb_fit_freq_base*^<number_of_r_updates_so_far>. Use 1 to update
+            *r* at each iteration.
+        abstol (float): Absolute tolerance for convergence for log-likelihood
+            improvement.
+        verbose (bool): Whether to print progress updates every epoch.
+        random_state (int): The random seed to use in NMF initialisation.
+        W_fixed (numpy.ndarray): A matrix of shape (M, k). If provided, then
+            W is not updated but this matrix is used as a constant W instead.
+        W_init (numpy.ndarray): The initial W matrix values.
+        H_init (numpy.ndarray): The initial H matrix values.
+        r (float): If `nbinom_fit` is `False`, then this value is used as the
+            constant overdispersion parameter for negative binomial NMF. If
+            `nbinom_fit` is True, this parameter is ignored.
+        fit_submat (bool): Whether to employ the heuristic of fitting the
+            "steepest" coordinates of W and H between each epoch.
+
+    Returns:
+        numpy.ndarray: The fitted W matrix of shape (M, k). The matrix is scaled
+            to column sums of 1.
+        numpy.ndarray: The fitted H matrix of shape (k, N). The matrix is scaled
+            correspondingly to W matrix scaling.
+        float: The overdispersion parameter r. Returns None if the Poisson model
+            was fitted.
+        int: Number of iterations used.
+        list: A list of errors recorded every 10 iterations.
+    """
+    if fit_submat and W_fixed is not None:
+        raise ValueError("Using 'fit_submat' is not supported when W_fixed is "
+                         "provided.")
+
+    # Make sure the matrices are numpy arrays.
+    X = _validate_is_ndarray(X)
+    S = _validate_is_ndarray(S)
+    O = _validate_is_ndarray(O)  # noqa: E741
+
+    k, W, H, r, update_W = _init_nmf_params(X, k, S, O, W_fixed, W_init, H_init,
+                                            nbinom_fit, r, random_state)
+    start_time = time.time()
+    previous_error_mat = None
+    prev_error = None
+    errors = []
+    n_epoch = 0
+    n_iter = 0
+    r_updates = 0
+    next_r_update = 0
+    WH_converged = False
+
+    while n_epoch < max_epoch:
+        # 1. Run an epoch's worth of iterations.
+        # 2. Note top improving columns and rows.
+        # 3. Fit the submatrix until the fit is sufficiently low.
+        # 4. Go back to 1.
+        for _ in range(epoch_len):
+            if nbinom_fit and (WH_converged or n_iter == next_r_update):
+                W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, 'ml', update_W)
+                r_updates += 1
+                next_r_update = n_iter + int(nb_fit_freq_base ** r_updates)
+                if verbose:
+                    logging.info(f'At iteration {n_iter}, updated r to {r}')
+            else:
+                W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, None, update_W)
+            n_iter += 1
+        n_epoch += 1
+
+        # Compute current elapsed time and errors.
+        elapsed = time.time() - start_time
+        X_exp = _nmf_mu(W, H, S, O)
+        error_mat = _divergence(X, X_exp, r, True)
+        error = np.sum(error_mat)
+        errors.append(error)
+        if verbose:
+            logging.info(
+                "Iteration {} after {:.3f} seconds, error: {}".format(
+                    n_iter, elapsed, error))
+        if prev_error is not None and prev_error - error < 0:
+            msg = ("Iteration {} after {:.3f}, error increased from {} to "
+                    "{} seconds: error increased.".format(
+                        n_iter, elapsed, prev_error, error))
+            logging.warning(msg)
+        if prev_error is None:
+            # Nothing to be done after the first epoch.
+            pass
+        elif prev_error - error < abstol:
+            # If WH has converged, start polishing r by updating it at every
+            # iteration. If both WH and r have converged, then finish.
+            if nbinom_fit and not WH_converged:
+                if verbose:
+                    msg = ("Iteration {} after {:.3f} seconds, W and H "
+                           "converged, error: {}".format(
+                               n_iter, elapsed, error))
+                    logging.info(msg)
+                WH_converged = True
+            else:
+                # The section where both WH and r have converged.
+                break
+        elif fit_submat:
+            # If WH has not converged yet, identify and exhaustively update
+            # a submatrix of X.
+            error_diff_mat = previous_error_mat - error_mat
+            outlier_rows = _get_zscore_outlier_idx(np.sum(error_diff_mat, 1))
+            outlier_cols = _get_zscore_outlier_idx(np.sum(error_diff_mat, 0))
+
+            n_subiter = 0
+            while True:
+                for _ in range(epoch_len):
+                    if len(outlier_rows) > 0:
+                        W[outlier_rows, :] = _multiplicative_update_W(
+                            X[outlier_rows, :], W[outlier_rows, :], H,
+                            S[outlier_rows, :], O[outlier_rows, :], r)
+                    if len(outlier_cols) > 0:
+                        H[:, outlier_cols] = _multiplicative_update_H(
+                            X[:, outlier_cols], W, H[:, outlier_cols],
+                            S[:, outlier_cols], O[:, outlier_cols], r)
+                    n_subiter += 1
+                error = np.sum(_divergence(X, _nmf_mu(W, H, S, O), r, True))
+                if prev_error - error < abstol * 10:
+                    break
+                prev_error = error
+            if verbose:
+                elapsed = time.time() - start_time
+                msg = ("After fitting {} rows of W and {} columns of H for "
+                       "{} iterations after {:.3f} seconds, error is {}"
+                       .format(len(outlier_rows), len(outlier_cols), n_subiter,
+                               elapsed, error))
+                logging.info(msg)
+        previous_error_mat = error_mat
+        prev_error = error
+
+    if n_epoch == max_epoch:
+        logging.warning("Maximum epoch {} reached.".format(max_epoch))
+
+    # Scale W and H such that W columns sum to 1.
+    if update_W:
+        W_colsums = np.sum(W, axis=0)
+        W /= W_colsums[np.newaxis, :]
+        H *= W_colsums[:, np.newaxis]
+    return W, H, r, n_iter, errors
 
 
 def hk_lrt(
