@@ -556,7 +556,8 @@ def fit(
         random_state=None,
         W_fixed=None,
         H_init=None,
-        r=None):
+        r=None,
+        epoch_len=10):
     """Fit KL-NMF using multiplicative updates.
 
     Args:
@@ -573,9 +574,10 @@ def fit(
             W and H iterations between consecutive r updates is
             *nb_fit_freq_base*^<number_of_r_updates_so_far>.
         max_iter (int): Maximum number of iterations to use.
-        abstol (float): Absolute tolerance for convergence **per element** (in
-            the log-space of likelihood).
-        verbose (bool): Whether to print progress updates every 10 iterations.
+        abstol (float): Absolute tolerance for convergence in the log-space of
+            likelihood.
+        verbose (bool): Whether to print progress updates every `epoch_len`
+            iterations.
         random_state (int): The random seed to use in NMF initialisation.
         W_fixed (numpy.ndarray): A matrix of shape (M, k). If provided, then
             W is not updated but this matrix is used as a constant W instead.
@@ -583,6 +585,8 @@ def fit(
         r (float): If `nbinom_fit` is `False`, then this value is used as the
             constant overdispersion parameter for negative binomial NMF. If
             `nbinom_fit` is True, this parameter is ignored.
+        epoch_len (int): Compute divergence and check convergence every
+            `epoch_len` iterations.
 
     Returns:
         numpy.ndarray: The fitted W matrix of shape (M, k). The matrix is scaled
@@ -644,7 +648,7 @@ def fit(
         n_iter += 1
 
         # Test for convergence every 10 iterations.
-        if n_iter % 10 == 0:
+        if n_iter % epoch_len == 0:
             X_exp = _nmf_mu(W, H, S, O)
             error = _divergence(X, X_exp, r)
             errors.append(error)
@@ -655,7 +659,7 @@ def fit(
                         n_iter, elapsed, error))
             if previous_error is None:
                 previous_error = error
-            elif (previous_error - error) / np.prod(X.shape) < abstol:
+            elif previous_error - error < abstol:
                 if nbinom_fit and not WH_converged:
                     if verbose:
                         elapsed = time.time() - start_time
@@ -1256,7 +1260,7 @@ class SingleNMFModel:
         if self.nbinom:
             param_count += 1
         aic = calc_aic(fitted_loglik, param_count)
-        bic = calc_bic(fitted_loglik, param_count, np.prod(self.X.shape))
+        bic = calc_bic(fitted_loglik, param_count, self.X.shape[1])
 
         elapsed = time.time() - start_time
 
