@@ -722,7 +722,8 @@ def mpfit(
         abstol=1e-4,
         random_state=None,
         n_processes=None,
-        verbose=False):
+        verbose=False,
+        epoch_len=10):
     """Parallelised NMF fitting.
 
     Args:
@@ -743,16 +744,19 @@ def mpfit(
     """
     if n_processes is None:
         n_processes = os.cpu_count() - 1
+
     # Create argument list for fit(). The last three arguments are 'verbose',
     # and 'random_state'.
     if random_state is None:
-        args_list = [(X, k, S, O, nbinom_fit, nb_fit_freq_base, max_iter,
-                      abstol, False, None)] * random_inits
+        args_list = ([(X, k, S, O, nbinom_fit, nb_fit_freq_base, max_iter,
+                       abstol, False, None, None, None, None, epoch_len)]
+                     * random_inits)
     else:
         args_list = []
         for i in range(random_inits):
             args_list.append((X, k, S, O, nbinom_fit, nb_fit_freq_base,
-                              max_iter, abstol, False, random_state + i))
+                              max_iter, abstol, False, random_state + i, None,
+                              None, None, epoch_len))
     process_pool = multiprocessing.get_context("spawn").Pool(n_processes)
     if verbose:
         fitted_res = list(
