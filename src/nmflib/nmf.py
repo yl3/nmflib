@@ -955,13 +955,13 @@ def fit_steepest(
             median_error_loss = max(
                 np.median(previous_error_mat - error_mat),
                 abstol / np.prod(X.shape))
-            W_row_tol = median_error_loss * k
-            H_col_tol = median_error_loss * k
+            W_row_tol = median_error_loss * N
+            H_col_tol = median_error_loss * M
             update_W_rows = np.arange(M)
             update_H_cols = np.arange(N)
             n_subiter = 0
             while True:
-                for _ in range(epoch_len * 10):
+                for _ in range(epoch_len):
                     if len(update_W_rows) > 0:
                         W[update_W_rows, :] = _multiplicative_update_W(
                             X[update_W_rows, :], W[update_W_rows, :], H,
