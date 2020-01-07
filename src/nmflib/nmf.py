@@ -1247,13 +1247,15 @@ class SingleNMFModel:
         # Compute the best decomposition.
         if processes_to_spawn == 1:
             errors_best = None
-            if verbose:
+            if verbose == 1:
                 random_init_range = tqdm.tqdm(range(self.random_inits))
             else:
                 random_init_range = range(self.random_inits)
+            fit_verbose = verbose > 1
             for _ in random_init_range:
                 W, H, r, n_iter, errors = fit(self.X, self.rank, self.S, self.O,
-                                              self.nbinom, **kwargs)
+                                              self.nbinom, verbose=fit_verbose,
+                                              **kwargs)
                 if errors_best is None or errors[-1] < errors_best[-1]:
                     W_best, H_best, r_best, n_iter_best = W, H, r, n_iter
                     errors_best = errors
