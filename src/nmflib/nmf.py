@@ -659,12 +659,12 @@ def fit(
     # that update r at every iteration.
     WH_converged = False
     while n_iter < max_iter:
-        if nbinom_fit and (WH_converged or n_iter == next_r_update):
+        if nbinom_fit and n_iter == next_r_update:
             W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, 'ml', update_W)
             r_updates += 1
             next_r_update = n_iter + int(nb_fit_freq_base**r_updates)
             if verbose:
-                logging.info(f'Updated r to {r}')
+                logging.info(f'Iteration {n_iter}, updated r to {r}.')
         else:
             W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, None, update_W)
         n_iter += 1
@@ -690,6 +690,7 @@ def fit(
                                    n_iter, elapsed, error))
                         logging.info(msg)
                     WH_converged = True
+                    next_r_update = n_iter  # Bump r update to the front.
                 else:
                     break
             previous_error = error
