@@ -574,15 +574,14 @@ def fit(
         S=None,
         O=None,  # noqa: E741
         nbinom_fit=False,
-        nb_fit_freq_base=1.5,
-        max_iter=1000,
-        abstol=1e-4,
-        verbose=False,
+        max_iter=10000,
+        abstol=1e-6,
+        epoch_len=100,
         random_state=None,
         W_fixed=None,
         H_init=None,
         r=None,
-        epoch_len=10):
+        verbose=False):
     """Fit KL-NMF using multiplicative updates.
 
     Args:
@@ -595,14 +594,12 @@ def fit(
             representing the additive offset term.
         nbinom_fit (bool): Whether to fit a negative binomial model or a default
             Poisson model.
-        nb_fit_freq_base (int): A positive integer such that the number of
-            W and H iterations between consecutive r updates is
-            *nb_fit_freq_base*^<number_of_r_updates_so_far>.
         max_iter (int): Maximum number of iterations to use.
         abstol (float): Absolute tolerance for convergence in the log-space of
-            likelihood.
-        verbose (bool): Whether to print progress updates every `epoch_len`
-            iterations.
+            likelihood per iteration. Fitting is considered converged when error
+            improves by less than `abstol` x `epoch_len` over an `epoch_len`.
+        epoch_len (int): Compute divergence, check convergence and optionally
+            update negative binomial dispersion every this many iterations.
         random_state (int): The random seed to use in NMF initialisation.
         W_fixed (numpy.ndarray): A matrix of shape (M, k). If provided, then
             W is not updated but this matrix is used as a constant W instead.
@@ -610,8 +607,8 @@ def fit(
         r (float): If `nbinom_fit` is `False`, then this value is used as the
             constant overdispersion parameter for negative binomial NMF. If
             `nbinom_fit` is True, this parameter is ignored.
-        epoch_len (int): Compute divergence and check convergence every
-            `epoch_len` iterations.
+        verbose (bool): Whether to print progress updates every `epoch_len`
+            iterations.
 
     Returns:
         numpy.ndarray: The fitted W matrix of shape (M, k). The matrix is scaled
@@ -621,7 +618,7 @@ def fit(
         float: The overdispersion parameter r. Returns None if the Poisson model
             was fitted.
         int: Number of iterations used.
-        list: A list of errors recorded every 10 iterations.
+        list: A list of errors recorded every `epoch_len` iterations.
     """
     if k is None and W_fixed is None:
         raise ValueError("'r' must be provided if 'W_fixed' is not.")
@@ -650,52 +647,37 @@ def fit(
     start_time = time.time()
     previous_error = None
     errors = []
-
     n_iter = 0
-    r_updates = 0
-    next_r_update = 0
 
-    # Before W and H have converged, update r with a exponential schedule. After
-    # that update r at every iteration.
-    WH_converged = False
-    while n_iter < max_iter:
-        if nbinom_fit and n_iter == next_r_update:
-            W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, 'ml', update_W)
-            r_updates += 1
-            next_r_update = n_iter + int(nb_fit_freq_base**r_updates)
+    while True:
+        # Test for convergence and optionally update r every epoch_len
+        # iterations.
+        X_exp = _nmf_mu(W, H, S, O)
+
+        if nbinom_fit:
+            r, _ = fit_nbinom_nmf_r_ml(X, X_exp, r)
             if verbose:
                 logging.info(f'Iteration {n_iter}, updated r to {r}.')
-        else:
-            W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, None, update_W)
-        n_iter += 1
 
-        # Test for convergence every 10 iterations.
-        if n_iter % epoch_len == 0:
-            X_exp = _nmf_mu(W, H, S, O)
-            error = _divergence(X, X_exp, r)
-            errors.append(error)
-            if verbose:
-                elapsed = time.time() - start_time
-                logging.info(
-                    "Iteration {} after {:.3f} seconds, error: {}".format(
-                        n_iter, elapsed, error))
-            if previous_error is None:
-                previous_error = error
-            elif previous_error - error < abstol:
-                if nbinom_fit and not WH_converged:
-                    if verbose:
-                        elapsed = time.time() - start_time
-                        msg = ("Iteration {} after {:.3f} seconds, W and H "
-                               "converged, error: {}".format(
-                                   n_iter, elapsed, error))
-                        logging.info(msg)
-                    WH_converged = True
-                    next_r_update = n_iter  # Bump r update to the front.
-                else:
-                    break
+        # Perform `epoch_len` updates (without updating r).
+        for _ in range(epoch_len):
+            W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, update_W=update_W)
+
+        # Check for convergence.
+        error = _divergence(X, X_exp, r)
+        errors.append(error)
+        if verbose:
+            elapsed = time.time() - start_time
+            logging.info(
+                "Iteration {} after {:.3f} seconds, error: {}".format(
+                    n_iter, elapsed, error))
+        if previous_error is None:
             previous_error = error
+        elif previous_error - error < abstol * epoch_len:
+            break
+        previous_error = error
 
-    if n_iter == max_iter:
+    if n_iter >= max_iter:
         logging.warning("Maximum iteration reached.")
 
     # Scale W and H such that W columns sum to 1.
