@@ -1255,51 +1255,70 @@ class SingleNMFModel:
             W_best, H_best, r_best, n_iter_best, errors_best = \
                 fitted_models[best_model_idx]
 
-        # Calculate goodness-of-fit.
-        X_pred = _nmf_mu(W_best, H_best, self.S, self.O)
-        gof_D, gof_pval, sample_gof_pval, sim_logliks = gof(
-            self.X,
-            X_pred,
-            self.gof_sim_count,
-            r=r_best,
-            n_processes=processes_to_spawn)
-
-        # Calculate AIC and BIC.
-        fitted_loglik = np.sum(loglik(self.X, X_pred, r_best))
-        M, N, K = self.X.shape + (self.rank, )
-        param_count = (M - 1 + N) * K
-        if self.nbinom:
-            param_count += 1
-        aic = calc_aic(fitted_loglik, param_count)
-        bic = calc_bic(fitted_loglik, param_count, self.X.shape[1])
-
         elapsed = time.time() - start_time
+
+        X_pred = _nmf_mu(W_best, H_best, self.S, self.O)
+        fitted_loglik = np.sum(loglik(self.X, X_pred, r_best))
 
         # Save results.
         self.fitted = {
             'W': W_best,
             'H': H_best,
+            'X_pred': X_pred,
             'r': r_best,
-            'gof_D': gof_D,
-            'gof_pval': gof_pval,
-            'sample_gof': sample_gof_pval,
             'n_iter': n_iter_best,
             'errors': errors_best,
             'loglik': fitted_loglik,
-            'aic': aic,
-            'bic': bic,
             'elapsed': elapsed
         }
 
-    def __str__(self):
-        M, N = self.X.shape
-        if self.nbinom is False:
-            out_str = f'Poisson-NMF(M={M}, N={N}, K={self.rank})'
-        else:
-            out_str = f'nbinom-NMF(M={M}, N={N}, K={self.rank})'
-        if self.fitted is not None:
-            out_str += ' *'
-        return out_str
+    def gof(self, multiprocess=False):
+        """Compute simulated goodness-of-fit.
+
+        Args:
+            multiprocess (bool or int): Whether to use multiprocessing. If int,
+            then that number of parallel processes are spawned. If True,
+            then the number of processes is set to :func:`os.cpu_count` - 1.
+
+        Returns:
+            float: Goodness-of-fit KS statistic.
+            float: Goodness-of-fit KS P value.
+            numpy.ndarray: Goodness-of-fit p-values for each sample (i.e.
+                column of X) individually.
+            numpy.ndarray: A matrix of log-likelihoods for simulated
+                observations for each sample with shape (`sim_count`,
+                X.shape[1]).
+        """
+        if self.fitted is None:
+            raise ValueError(
+                'self.fitted is None. Please run self.fit() first.')
+        processes_to_spawn = _get_cpu_count(multiprocess)
+        gof_D, gof_pval, sample_gof_pval, sim_logliks = gof(
+            self.X,
+            self.fitted['X_pred'],
+            self.gof_sim_count,
+            r=self.fitted['r'],
+            n_processes=processes_to_spawn)
+        return gof_D, gof_pval, sample_gof_pval, sim_logliks
+
+    def aic(self):
+        """Calculate AIC."""
+        if self.fitted is None:
+            raise ValueError(
+                'self.fitted is None. Please run self.fit() first.')
+        param_count = self._n_params()
+        aic = calc_aic(self.fitted['loglik'], param_count)
+        return aic
+
+    def bic(self):
+        """Calculate BIC."""
+        if self.fitted is None:
+            raise ValueError(
+                'self.fitted is None. Please run self.fit() first.')
+        param_count = self._n_params()
+        sample_count = np.prod(self.X.shape)
+        bic = calc_bic(self.fitted['loglik'], param_count, sample_count)
+        return bic
 
     def _nmf_fitter_helper_func(self, print_dots=False, **kwargs):
         """Fit an NMF model from a random initialisation.
@@ -1316,6 +1335,24 @@ class SingleNMFModel:
             return W, H, r, n_iter, errors
 
         return fitter_helper_func
+
+    def _n_params(self):
+        """Number of model parameters."""
+        M, N = self.X.shape
+        param_count = (M - 1 + N) * self.rank
+        if self.nbinom:
+            param_count += 1
+        return param_count
+
+    def __str__(self):
+        M, N = self.X.shape
+        if self.nbinom is False:
+            out_str = f'Poisson-NMF(M={M}, N={N}, K={self.rank})'
+        else:
+            out_str = f'nbinom-NMF(M={M}, N={N}, K={self.rank})'
+        if self.fitted is not None:
+            out_str += ' *'
+        return out_str
 
 
 class SignaturesModel:
@@ -1374,12 +1411,14 @@ class SignaturesModel:
         self.gof_sim_count = gof_sim_count
         self.fitted = None
 
-    def fit(self, verbose=False, **kwargs):
+    def fit(self, verbose=False, multiprocess=False, **kwargs):
         """Fit all NMF ranks and store their goodness-of-fit values.
 
         Args:
             verbose (bool): Whether to show a progress bar for progress in
                 random initialisation fits.
+            multiprocess (bool or int): Whether to use multiprocessing. See
+                :meth:`SingleNMFModel.fit`.
             **kwargs: Keyword arguments for :func:`nmflib.nmf.fit`.
         """
         model_of_rank = {}
@@ -1388,15 +1427,16 @@ class SignaturesModel:
             model_of_rank[rank] = SingleNMFModel(self.X, rank, self.S, self.O,
                                                  self.nbinom, self.random_inits,
                                                  self.gof_sim_count)
-            model_of_rank[rank].fit(verbose, **kwargs)
+            model_of_rank[rank].fit(verbose, multiprocess, **kwargs)
         model_tuples = []
         for rank in self.ranks_to_test:
             m = model_of_rank[rank]
-            model_tuples.append(
-                (m, m.fitted['r'], m.fitted['loglik'], m.fitted['gof_D'],
-                 m.fitted['gof_pval'], m.fitted['aic'], m.fitted['bic'],
-                 m.fitted['n_iter'], m.fitted['errors'][-1],
-                 m.fitted['elapsed']))
+            tuple_to_append = [m, m.fitted['r'], m.fitted['loglik']]
+            tuple_to_append += m.gof(multiprocess)[:2]
+            tuple_to_append += (m.aic(), m.bic())
+            tuple_to_append += [m.fitted['n_iter'], m.fitted['errors'][-1],
+                                m.fitted['elapsed']]
+            model_tuples.append(tuple_to_append)
         columns = ('nmf_model', 'dispersion', 'log-likelihood', 'gof_D',
                    'gof_pval', 'aic', 'bic', 'n_iter', 'final_error', 'elapsed')
         out_df = pd.DataFrame(model_tuples,
