@@ -568,6 +568,11 @@ def gof(X, X_exp, sim_count=None, random_state=None, r=None, n_processes=1):
     return gof_D, gof_pval, sample_pvals, sim_logliks
 
 
+class MaxIterError(Exception):
+    """Maximum iteration reached without convergence in NMF fit."""
+    pass
+
+
 def fit(
         X,
         k=None,
@@ -581,7 +586,8 @@ def fit(
         W_fixed=None,
         H_init=None,
         r=None,
-        verbose=False):
+        verbose=False,
+        max_iter_error=False):
     """Fit KL-NMF using multiplicative updates.
 
     Args:
@@ -609,6 +615,8 @@ def fit(
             `nbinom_fit` is True, this parameter is ignored.
         verbose (bool): Whether to print progress updates every `epoch_len`
             iterations.
+        max_iter_error (bool): If True, an error as opposed to a warning is
+            raised if maximum iteration limit is reached.
 
     Returns:
         numpy.ndarray: The fitted W matrix of shape (M, k). The matrix is scaled
@@ -619,6 +627,10 @@ def fit(
             was fitted.
         int: Number of iterations used.
         list: A list of errors recorded every `epoch_len` iterations.
+
+    Raises:
+        MaxIterError: If `max_iter_error` is True and the maximum iteration
+            limit is reached.
     """
     if k is None and W_fixed is None:
         raise ValueError("'r' must be provided if 'W_fixed' is not.")
@@ -678,7 +690,11 @@ def fit(
         previous_error = error
 
     if n_iter >= max_iter:
-        logging.warning("Maximum iteration reached.")
+        msg = "Maximum iteration reached."
+        if max_iter_error:
+            raise MaxIterError(msg)
+        else:
+            logging.warning(msg)
 
     # Scale W and H such that W columns sum to 1.
     if update_W:
