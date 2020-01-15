@@ -574,9 +574,9 @@ def fit(
         S=None,
         O=None,  # noqa: E741
         nbinom_fit=False,
-        max_iter=10000,
-        abstol=1e-6,
-        epoch_len=100,
+        max_iter=1000,
+        abstol=1e-5,
+        epoch_len=10,
         random_state=None,
         W_fixed=None,
         H_init=None,
