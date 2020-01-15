@@ -1277,8 +1277,8 @@ class SingleNMFModel:
 
         Args:
             multiprocess (bool or int): Whether to use multiprocessing. If int,
-            then that number of parallel processes are spawned. If True,
-            then the number of processes is set to :func:`os.cpu_count` - 1.
+                then that number of parallel processes are spawned. If True,
+                then the number of processes is set to :func:`os.cpu_count` - 1.
 
         Returns:
             float: Goodness-of-fit KS statistic.
