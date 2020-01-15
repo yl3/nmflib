@@ -66,6 +66,18 @@ def _validate_is_ndarray(arr):
         raise ValueError('Expected numpy.ndarray or pandas.DataFrame as type.')
 
 
+def _ensure_df(arr):
+    """Return a Pandas DataFrame version of the array."""
+    if arr is None:
+        return None
+    elif isinstance(arr, pd.DataFrame):
+        return arr
+    elif isinstance(arr, np.ndarray):
+        return pd.DataFrame(arr)
+    else:
+        raise ValueError('Expected numpy.ndarray or pandas.DataFrame as type.')
+
+
 def _multiplicative_update_W(X, W, H, S=None, O=None, r=None):  # noqa: E741
     """Multiplicative KL-update for W.
 
@@ -928,6 +940,8 @@ def hk_confint(
             mutation types.
         W (numpy.ndarray): A signatures matrix of shape (M, k).
         sig_idx (int): Which signature with the statistics be computed on?
+        S (numpy.ndarray): 1D array of scaling factors.
+        O (numpy.ndarray): 1D array of offsets.
         alpha (float): The cumulative probability that should lie outside the
             confidence intervals (in total for both sides).
         r (float): If provided, negative binomial model will be used.
@@ -953,6 +967,10 @@ def hk_confint(
     """
     # Convert variables into appropriate column vectors.
     x_obs = x_obs.reshape(-1, 1)
+    if S is not None:
+        S = S.reshape(-1, 1)
+    if O is not None:
+        O = O.reshape(-1, 1)  # noqa: E741
     if fit_kwargs is None:
         fit_kwargs = {}
     if 'max_iter' not in fit_kwargs:
@@ -1037,6 +1055,8 @@ def h_confint(
         x_obs (numpy.ndarray): 1D array of observed mutation counts across M
             mutation types.
         W (numpy.ndarray): A signatures matrix of shape (M, k).
+        S (numpy.ndarray): 1D array of scaling factors.
+        O (numpy.ndarray): 1D array of offsets.
         alpha (float): The cumulative probability that should lie outside the
             confidence intervals (in total for both sides).
         r (float): If provided, negative binomial model will be used.
@@ -1053,11 +1073,19 @@ def h_confint(
     """
     if fit_kwargs is None:
         fit_kwargs = dict()
+    if S is None:
+        S_colvec = None
+    else:
+        S_colvec = S.reshape(-1, 1)
+    if O is None:
+        O_colvec = None
+    else:
+        O_colvec = O.reshape(-1, 1)
     if h_hat is None:
-        _, h_hat, _, _, _ = fit(x_obs,
+        _, h_hat, _, _, _ = fit(x_obs.reshape(-1, 1),
                                 None,
-                                S,
-                                O,
+                                S_colvec,
+                                O_colvec,
                                 W_fixed=W,
                                 r=r,
                                 **fit_kwargs)
@@ -1340,6 +1368,57 @@ class SingleNMFModel:
         sample_count = np.prod(self.X.shape)
         bic = calc_bic(self.fitted['loglik'], param_count, sample_count)
         return bic
+
+    def predict(self, X_new=None, S_new=None, O_new=None, alpha=0.05,
+                verbose=False, **kwargs):
+        """Fit H MLEs and alpha-confidence intervals for a new count matrix.
+
+        Args:
+            alpha (float): The total probability that should lie outside the
+                confidence intervals.
+            X_new (array-like): A 2D array of shape `M`, `N_new` of nonnegative
+                mutation counts. If None, then :attr:`X` is use instead.
+            S_new (array-like): Scaling matrix for `X_new`.
+            O_new (array-like): Offset matrix for `X_new`.
+            verbose (bool): Whether to print a progress bar.
+            kwargs (dict): Additional keyword arguments for :func:`h_confint`.
+
+        Returns:
+            pd.DataFrame: A "long format" data frame of confidence intervals and
+                likelihood ratio results for each sample and signature.
+        """
+        if self.fitted is None:
+            raise ValueError(
+                'self.fitted is None. Please run self.fit() first.')
+        if X_new is None:
+            X_new = self.X
+            S_new = self.S
+            O_new = self.O
+        else:
+            X_new = _ensure_df(X_new)
+            S_new = _ensure_df(S_new)
+            O_new = _ensure_df(O_new)
+        confint_dfs = []
+        if verbose:
+            sample_list = tqdm.tqdm(X_new.columns)
+        else:
+            sample_list = X_new.columns
+        for sample in sample_list:
+            if S_new is None:
+                cur_S = None
+            else:
+                cur_S = S_new[sample].values
+            if O_new is None:
+                cur_O = None
+            else:
+                cur_O = O_new[sample].values
+            confint_df = h_confint(X_new[sample].values, self.fitted['W'],
+                                   cur_S, cur_O, alpha, self.fitted['r'])
+            confint_df.index = pd.MultiIndex.from_frame(
+                pd.DataFrame({'signature': range(self.rank), 'sample': sample}))
+            confint_dfs.append(confint_df)
+        full_df = pd.concat(confint_dfs)
+        return full_df
 
     def _nmf_fitter_helper_func(self, print_dots=False, **kwargs):
         """Fit an NMF model from a random initialisation.
