@@ -920,6 +920,8 @@ def hk_confint(
         brentq_xtol (float): Parameter `xtol` for :func:`scipy.optimize.brentq`.
         brentq_rtol (float): Parameter `rtol` for :func:`scipy.optimize.brentq`.
         fit_kwargs (dict): Additional keyword arguments for :func:`fit`.
+            By default, `max_iter` is infinite, `abstol` is 0.01 and `epoch_len`
+            is 5.
 
     Returns:
         float: Estimated or provided exposure of signature `sig_idx`.
@@ -937,6 +939,10 @@ def hk_confint(
     x_obs = x_obs.reshape(-1, 1)
     if fit_kwargs is None:
         fit_kwargs = {}
+    if 'max_iter' not in fit_kwargs:
+        fit_kwargs['max_iter'] = float('inf')
+    if 'abstol' not in fit_kwargs:
+        fit_kwargs['abstol'] = 0.01
     if h_hat is not None:
         h_hat = h_hat.reshape(-1, 1)
     else:
@@ -1022,12 +1028,15 @@ def h_confint(
             across k signatures.
         brentq_xtol (float): Parameter `xtol` for :func:`scipy.optimize.brentq`.
         brentq_rtol (float): Parameter `rtol` for :func:`scipy.optimize.brentq`.
-        fit_kwargs (dict): Additional keyword arguments for :func:`fit`.
+        fit_kwargs (dict): Additional keyword arguments for :func:`fit`. See
+            also :func:`hk_confint`.
 
     Returns:
         pandas.DataFrame: A data frame of confidence intervals and likelihood
             ratio results.
     """
+    if fit_kwargs is None:
+        fit_kwargs = dict()
     if h_hat is None:
         _, h_hat, _, _, _ = fit(x_obs,
                                 None,
@@ -1041,13 +1050,9 @@ def h_confint(
     for sig_idx in range(len(h_hat)):
         output_tuple = hk_confint(x_obs, W, sig_idx, S, O, alpha, r, h_hat,
                                   brentq_xtol, brentq_rtol, fit_kwargs)
-        (h_hat_i, confint_lower_bound, confint_upper_bound, h0_chi2_pval,
-         h0_chi2_stat, ml_loglik, h0_loglik, _, _) = output_tuple
-        output_tuples.append((
-            h_hat_i, confint_lower_bound, confint_upper_bound,
-            h0_chi2_pval, h0_chi2_stat, ml_loglik, h0_loglik))
+        output_tuples.append(output_tuple)
     columns = ('h', 'cint_low', 'cint_high', 'pval', 'chi2_stat', 'ml_loglik',
-               'h0_loglik')
+               'h0_loglik', 'r_lower_bound', 'r_upper_bound')
     out_df = pd.DataFrame(output_tuples, columns=columns)
     return out_df
 
