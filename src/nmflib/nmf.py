@@ -1017,7 +1017,7 @@ def hk_confint(
     # Compute the upper end of the confidence interval.
     target_f = _NMFProfileLoglikFitter(x_obs, W, h_hat, sig_idx, S, O, r,
                                        **fit_kwargs)._profile_ml
-    upper_bound_upper_bound = np.sum(x_obs)
+    upper_bound_upper_bound = np.sum(h_hat)
     while target_f(upper_bound_upper_bound) - h0_loglik_cutoff > 0:
         upper_bound_upper_bound *= 2
     confint_upper_bound, r_upper_bound = scipy.optimize.brentq(
