@@ -82,7 +82,7 @@ With the first and the second derivate, Newton's method can be used during itera
 The model is
 
 $$
-\mathbf{X} \sim \Pr{}_{\text{NegBin}}((\mathbf{WH} + \mathbf{O}) \circ \mathbf{S}, r)
+\mathbf{X} \sim \text{NegBin}(\text{mean} = (\mathbf{WH} + \mathbf{O}) \circ \mathbf{S}, \text{dispersion} = r)
 $$
 
 Updates for $\mathbf{W}$:
