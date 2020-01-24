@@ -14,8 +14,6 @@ import scipy.optimize
 from scipy.special import digamma, polygamma
 import sklearn.metrics.pairwise
 
-import nmflib.constants
-
 
 def _ensure_pos(arr, epsilon=np.finfo(np.float32).eps, inplace=True):
     """Ensure a (very low) epsilon floor for arr."""
@@ -1101,15 +1099,15 @@ def h_confint(
     return out_df
 
 
-def match_signatures(W1, W2):
-    """Match mutational signatures (columns) between W1 and W2.
+def match_components(W1, W2):
+    """Match NMF components (columns) between W1 and W2.
 
     The distance metric used in cosine similarity. Matching is done using
     Hungarian algorithm.
 
     Args:
-        W1 (array-like): An array of shape (<mutation contexts>, <signatures>).
-        W2 (array-like): An array of shape (<mutation contexts>, <signatures>).
+        W1 (array-like): An array of shape (<mutation contexts>, <component>).
+        W2 (array-like): An array of shape (<mutation contexts>, <component>).
 
     Returns:
         numpy.ndarray: An array of indices matching columns of W2 with columns
@@ -1118,85 +1116,6 @@ def match_signatures(W1, W2):
     dist_mat = sklearn.metrics.pairwise.cosine_distances(W1.T, W2.T)
     _, W2_idx = scipy.optimize.linear_sum_assignment(dist_mat)
     return W2_idx
-
-
-def mut_context_df(relative=True):
-    """Compute the opportunity mutation type in each context.
-
-    Currently only supports the 96 trinucleotide pyrimidine strand SNV types.
-
-    Args:
-        relative (bool): Whether to return the absolute opportunity counts. If
-            False, the returned values are in [0, 1] and correspond to the
-            proportion of each context in the whole genome that is (estimated to
-            be) observable in whole-exome sequencing.
-
-    Returns:
-        pandas.DataFrame: A data frame giving the contexts counts in the genome
-            or the exome.
-    """
-    # Merge the absolute mutation counts.
-    mut_context_types = pd.MultiIndex.from_product(
-        [nmflib.constants.MUTS_6, nmflib.constants.HUMAN_GENOME_TRINUCS.index])
-    mut_context_types = mut_context_types.to_frame()
-    sel = mut_context_types[0].str[0] == mut_context_types[1].str[1]
-    mut_context_types = mut_context_types.loc[sel]
-
-    if relative:
-        gw_rates = pd.Series([1.0] * len(nmflib.constants.HUMAN_GENOME_TRINUCS),
-                             index=nmflib.constants.HUMAN_GENOME_TRINUCS.index)
-        ew_rates = pd.Series(nmflib.constants.HUMAN_EXOME_TRINUCS /
-                             nmflib.constants.HUMAN_GENOME_TRINUCS)
-    else:
-        gw_rates = nmflib.constants.HUMAN_GENOME_TRINUCS
-        ew_rates = nmflib.constants.HUMAN_EXOME_TRINUCS
-    mut_context_types = mut_context_types.merge(gw_rates.to_frame(),
-                                                left_on=1,
-                                                right_index=True)
-    mut_context_types = mut_context_types.merge(ew_rates.to_frame(),
-                                                left_on=1,
-                                                right_index=True)
-
-    # After merging the counts, drop the first two columns that correspond to
-    # the index anyways. Then name the remaining columns properly.
-    mut_context_types.drop(columns=mut_context_types.columns[:2], inplace=True)
-    mut_context_types.columns = ['gw_rate', 'ew_rate']
-
-    return mut_context_types
-
-
-def context_rate_matrix(sample_is_exome, relative=True):
-    """Make context matrix S for mutation opportunity.
-
-    Make a matrix S such that each column corresponds to mutation context counts
-    depending of a sample depending on whether the sample underwent whole-exome
-    or whole-genome sequencing.
-
-    Currently only SNVs in trinucleotide context (96 types) is supported.
-
-    Args:
-        sample_is_exome (array-like): A boolean array for whether the sample
-            underwent exome or whole-genome sequencing.
-        relative (bool): Whether to return the absolute opportunity counts. If
-            False, the returned values are in [0, 1] and correspond to the
-            proportion of each context in the whole genome that is (estimated to
-            be) observable in whole-exome sequencing.
-
-    Returns:
-        pandas.DataFrame: A data frame of shape (96, len(sample_is_exome)) of
-            the relative or absolute opportunities).
-    """
-    context_counts = mut_context_df(relative)
-    counts_to_use = [
-        context_counts['ew_rate'] if x else context_counts['gw_rate']
-        for x in sample_is_exome
-    ]
-    scale_mat = pd.DataFrame(counts_to_use).T
-    if isinstance(sample_is_exome, pd.Series):
-        scale_mat.columns = sample_is_exome.index
-    else:
-        scale_mat = scale_mat.T.reset_index(drop=True).T
-    return scale_mat
 
 
 class SingleNMFModel:
