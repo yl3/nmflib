@@ -1,35 +1,64 @@
 """Test NMF code."""
+# Copyright (C) 2019 Yilong Li (yilong.li.yl3@gmail.com) - All Rights Reserved
 
 import pytest
 
 import logging
-import numpy as np
-import pandas as pd
 import re
-import scipy.stats
-import sklearn.decomposition._nmf
 import time
 
-import nmflib.constants
+import numpy as np
+import pandas as pd
+import scipy.stats
+
 import nmflib.nmf
 
 
+def test_validate_is_ndarray():
+    """Test nmf._validate_is_ndarray()."""
+    assert nmflib.nmf._validate_is_ndarray(None) is None
+    arr = np.arange(6).reshape(3, 2)
+    df = pd.DataFrame(arr)
+    assert isinstance(nmflib.nmf._validate_is_ndarray(arr), np.ndarray)
+    assert isinstance(nmflib.nmf._validate_is_ndarray(df), np.ndarray)
+    with pytest.raises(ValueError):
+        nmflib.nmf._validate_is_ndarray("Not an array")
+
+
 class SimpleNMFData:
-    """Three channels and two signatures.
+    """Three channels and two signatures. No sampling noise whatsoever.
 
     The first signature only creates mutations in the first two channels. The
     second signature creates mutations in all channels.
     """
-    X = np.array([[15, 40, 12, 85], [15, 20, 0, 25], [0, 10, 6, 30],
-                  [0, 20, 12, 60]])
     W_true = np.array([[.5, 0.4], [.5, 0], [0, 0.2], [0, 0.4]])
-    H_true = np.array([[30, 40, 0, 50], [0, 50, 30, 150]])
     k = W_true.shape[1]
+    H_true = np.array([[30, 40, 0, 50], [0, 50, 30, 150]])
+    S = np.array([[1, 1, 0.5, 0.25], [1, 1, 0.5, 0.25], [1, 1, 0.5, 0.25],
+                  [1, 1, 0.5, 0.25]])
 
-    @classmethod
-    def check_answer(cls, W, H):
+    def __init__(self, use_S=False, use_O=False):
+        self.W = SimpleNMFData.W_true
+        self.H = SimpleNMFData.H_true
+        self.rank = SimpleNMFData.k
+        X_exp = np.matmul(self.W, self.H)
+        if use_O:
+            # Add an offset that's identical to 2 * WH...
+            self.O = 2 * np.matmul(self.W, self.H)  # noqa: E741
+            X_exp += self.O
+        else:
+            self.O = None  # noqa: E741
+        if use_S:
+            self.S = SimpleNMFData.S
+            X_exp *= self.S
+        else:
+            self.S = None
+        self.X = np.round(X_exp)
+
+    def check_answer(self, W, H):
         """Check if the fitted matrices are close to the true one."""
-        TOL = 1e-4
+        RELTOL = 0.05  # Needs to be quite high since local maxima are real...
+        ABSTOL = 0.01
         assert W.shape == (4, 2)
         assert H.shape == (2, 4)
 
@@ -38,39 +67,34 @@ class SimpleNMFData:
             W = W[:, [1, 0]]
             H = H[[1, 0], :]
 
-        assert np.all(np.abs(W - cls.W_true) < TOL)
-        assert np.all(np.abs(H - cls.H_true) < TOL)
+        # Check the closeness of the parameters.
+        assert np.allclose(self.W_true, W, RELTOL, ABSTOL)
+        assert np.allclose(self.H_true, H, RELTOL, ABSTOL)
 
-
-class ScaledNMFData(SimpleNMFData):
-    """Three channels and two signatures.
-
-    The first signature only creates mutations in the first two channels. The
-    second signature creates mutations in all channels.
-
-    The third and fourth samples are "exome" patients where only 25% of 50% of
-    the possible mutations can be observed. Overall counts are however adjusted
-    to match that of SimpleNMFData.
-    """
-    S = np.array([[1, 1, 0.5, 0.25], [1, 1, 0.5, 0.25], [1, 1, 0.5, 0.25],
-                  [1, 1, 0.5, 0.25]])
-    H_true = np.array([[30, 40, 0, 200], [0, 50, 60, 600]])
+        # Check the closeness of the solution.
+        X_exp = nmflib.nmf.nmf_mu(W, H, self.S, self.O)
+        assert np.allclose(X_exp, self.X, RELTOL, ABSTOL)
 
 
 class SyntheticPCAWG():
     """Synthetic mutational signature convolutions from PCAWG.
 
-    Offsets and scales are simulated.
+    Offsets and scales are optionally simulated.
 
     Args:
         random_state (int): Random state for simulating counts. Default: 0.
     """
-    def __init__(self, datadir, r=None, random_state=0):
+    def __init__(self,
+                 datafiles,
+                 use_S=False,
+                 use_O=False,
+                 r=None,
+                 random_state=0):
         self.r = r
         self.random_state = random_state
-        self._load_syn_data(datadir)
+        self._load_syn_data(datafiles, use_S, use_O)
 
-    def simulate(self):  # noqa: E741
+    def simulate(self):
         """Simulate Poisson or nbinom (when r is provided) counts."""
         np.random.seed(self.random_state)
         if self.r is None:
@@ -80,41 +104,50 @@ class SyntheticPCAWG():
             rvs = scipy.stats.nbinom.rvs(self.r, p)
         return rvs
 
-    def _load_syn_data(self, datadir):
-        self.catalog = pd.read_csv(datadir + '/ground.truth.syn.catalog.csv.gz',
-                                   index_col=0,
-                                   header=0)
-        self.sigs = pd.read_csv(datadir + '/ground.truth.syn.sigs.csv.gz',
-                                index_col=[0, 1],
-                                header=0)
-        self.exposures = pd.read_csv(datadir +
-                                     '/ground.truth.syn.exposures.csv.gz',
-                                     index_col=0,
-                                     header=0)
-        X_exp = self.sigs.dot(self.exposures)
-        S = scipy.stats.uniform.rvs(0.05,
-                                    1 - 0.05,
-                                    X_exp.shape,
-                                    random_state=self.random_state)
-        X_exp *= S
-        O = scipy.stats.uniform.rvs(  # noqa: E741
-            0.5,
-            1 - 0.5,
-            X_exp.shape,
-            random_state=self.random_state)
-        O *= X_exp.values  # noqa: E741
-        X_exp -= O
+    def _load_syn_data(self, datafiles, use_S, use_O):
+        self.W = pd.read_csv(datafiles + '/ground.truth.syn.sigs.csv.gz',
+                             index_col=[0, 1],
+                             header=0)
+        self.H = pd.read_csv(datafiles + '/ground.truth.syn.exposures.csv.gz',
+                             index_col=0,
+                             header=0)
+        X_exp = self.W.dot(self.H)
+        if use_O:
+            O_fraction = scipy.stats.uniform.rvs(0.5,
+                                                 1 - 0.5,
+                                                 X_exp.shape,
+                                                 random_state=self.random_state)
+            O = O_fraction * X_exp.values  # noqa: E741
+            X_exp -= O
+            self.O = O  # noqa: E741
+        else:
+            self.O = None  # noqa: E741
+        if use_S:
+            S = scipy.stats.uniform.rvs(0.05,
+                                        1 - 0.05,
+                                        X_exp.shape,
+                                        random_state=self.random_state)
+            X_exp *= S
+            self.X_exp = X_exp
+            self.S = S
+        else:
+            self.S = None
         self.X_exp = X_exp
-        self.S = S
-        self.O = O  # noqa: E741
 
 
-@pytest.mark.datafiles('test_data/ground.truth.syn.catalog.csv.gz',
-                       'test_data/ground.truth.syn.sigs.csv.gz',
-                       'test_data/ground.truth.syn.exposures.csv.gz')
-def test_initialise_nmf(datafiles):
-    """Test nmf.initialise_nmf()."""
-    X = SyntheticPCAWG(datafiles).simulate()
+synthetic_nmf_data_dir = pytest.mark.datafiles(
+    'test_data/ground.truth.syn.sigs.csv.gz',
+    'test_data/ground.truth.syn.exposures.csv.gz')
+
+
+@synthetic_nmf_data_dir
+@pytest.mark.parametrize("use_S", [True, False])
+@pytest.mark.parametrize("use_O", [True, False])
+@pytest.mark.parametrize("r", [None, 100])
+def test_initialise_nmf(datafiles, use_S, use_O, r):
+    """Test nmf.initialise_nmf() on the PCAWG mutation count dataset."""
+    synthetic_pcawg_dataset = SyntheticPCAWG(datafiles, use_S, use_O, r)
+    X = synthetic_pcawg_dataset.simulate()
     M, N = X.shape
     k = 21
     W_init, H_init = nmflib.nmf.initialise_nmf(X, k)
@@ -124,174 +157,186 @@ def test_initialise_nmf(datafiles):
     assert np.all(np.sum(H_init, 0) == np.sum(X, 0))
 
 
-def test_fit_nmf(caplog):
-    """Test fitting a regular NMF."""
-    caplog.set_level(logging.INFO)
-    W, H, r, n_iter, errors = nmflib.nmf.fit(SimpleNMFData.X,
-                                             2,
-                                             max_iter=10000,
-                                             abstol=1e-10)
-    SimpleNMFData.check_answer(W, H)
-
-    # Test logging.
-    W, H, r, n_iter, errors = nmflib.nmf.fit(SimpleNMFData.X,
-                                             2,
-                                             max_iter=21,
-                                             abstol=1e-10,
-                                             verbose=True)
-    assert re.search(r"Iteration 10 after \S+ seconds, error: ", caplog.text)
-    assert re.search(r"Iteration 20 after \S+ seconds, error: ", caplog.text)
-
-
-def test_fit_nmf_scaled():
-    """Test fitting NMF with a scaling matrix."""
-    W, H, r, n_iter, errors = nmflib.nmf.fit(ScaledNMFData.X,
-                                             2,
-                                             ScaledNMFData.S,
-                                             abstol=1e-10)
-    ScaledNMFData.check_answer(W, H)
-
-
-def test_iterate_nbinom_nmf_r_ml():
-    """Test nmf._iterate_nbinom_nmf_r_ml() using simple data."""
-    mu = 10
-    true_r = 10
-    p = nmflib.nmf._nb_p(mu, true_r)
-    np.random.seed(0)
-    x = scipy.stats.nbinom.rvs(true_r, p, size=int(1e5))
-    r = nmflib.nmf._initialise_nb_r(x, mu)
-    for _ in range(10):
-        r = nmflib.nmf._iterate_nbinom_nmf_r_ml(x, mu, r)
-    assert 9.9 < r < 10.1  # Should be ~10.0
-
-
-def test_fit_nbinom_r_mm():
-    """Test to make sure nmf.fit_nbinom_r_mm() works using simple data."""
+@pytest.mark.parametrize("method", ["ml", "mm"])
+def test_iterate_nbinom_nmf_r(method):
+    """
+    Test nmf._iterate_nbinom_nmf_r_ml() and nmf._iterate_nbinom_nmf_r_mm().
+    """
     mu = 20
     true_r = 10
     p = nmflib.nmf._nb_p(mu, true_r)
     np.random.seed(0)
     x = scipy.stats.nbinom.rvs(true_r, p, size=int(1e5))
-    r, _ = nmflib.nmf.fit_nbinom_r_mm(x, mu, len(x) - 1)
-    assert 9.9 < r < 10.1  # Should be ~10.00
+    if method == 'ml':
+        r = nmflib.nmf._initialise_nb_r(x, mu)
+        for _ in range(10):
+            r = nmflib.nmf._iterate_nbinom_nmf_r_ml(x, mu, r)
+    else:
+        r, _ = nmflib.nmf.fit_nbinom_r_mm(x, mu, len(x) - 1)
+    assert 9.9 < r < 10.1  # Should be ~10.0
 
 
-@pytest.mark.datafiles('test_data/ground.truth.syn.catalog.csv.gz',
-                       'test_data/ground.truth.syn.sigs.csv.gz',
-                       'test_data/ground.truth.syn.exposures.csv.gz')
-def test_fit_nmf_monotonicity(datafiles):
-    """Make sure nmf.fit() is monotonous."""
-    datafiles = str(datafiles)
-    true_r = 10
-    synthetic_pcawg_data = SyntheticPCAWG(datafiles, true_r)
-    X_obs = synthetic_pcawg_data.simulate()
-    S = synthetic_pcawg_data.S
-    O = synthetic_pcawg_data.O  # noqa: E741
-    TARGET_RANK = 20
-
-    # Test the monotonicity of overall errors.
-    W, H, r, n_iter, errors = nmflib.nmf.fit(X_obs,
-                                             TARGET_RANK,
-                                             S,
-                                             O,
-                                             nbinom_fit=True,
-                                             verbose=True)
-
-    # Skip check on iterations 1-5, which are typically fitted using method
-    # of moments and are not guaranteed to increase log-likelihood.
-    for i in range(5, len(errors) - 1):
-        assert errors[i + 1] <= errors[i]
-
-
-@pytest.mark.datafiles('test_data/ground.truth.syn.catalog.csv.gz',
-                       'test_data/ground.truth.syn.sigs.csv.gz',
-                       'test_data/ground.truth.syn.exposures.csv.gz')
-def test_nmf_updates_monotonicity(datafiles):
-    """Make sure that each individual W, H and r update step is monotonous."""
-    datafiles = str(datafiles)
-    true_r = 10
-    synthetic_pcawg_data = SyntheticPCAWG(datafiles, true_r)
-    X_obs = synthetic_pcawg_data.simulate()
-    S = synthetic_pcawg_data.S
-    O = synthetic_pcawg_data.O  # noqa: E741
+@synthetic_nmf_data_dir
+@pytest.mark.parametrize("use_S", [True, False])
+@pytest.mark.parametrize("use_O", [True, False])
+@pytest.mark.parametrize("r", [None, 100])
+@pytest.mark.slow
+def test_nmf_updates_monotonicity(datafiles, use_S, use_O, r):
+    """
+    Make sure that each individual W, H and r update step is monotonous.
+    """
+    synthetic_pcawg_dataset = SyntheticPCAWG(datafiles, use_S, use_O, r)
+    X_obs = synthetic_pcawg_dataset.simulate()
+    S = synthetic_pcawg_dataset.S
+    O = synthetic_pcawg_dataset.O  # noqa: E741
     TARGET_RANK = 20
 
     # Run 10 iterations and make sure each individual update is monotonous.
-    W, H = sklearn.decomposition._nmf._initialize_nmf(
-        X_obs,
-        TARGET_RANK,
-        'random',
-        random_state=synthetic_pcawg_data.random_state)
-    X_exp = nmflib.nmf._nmf_mu(W, H, S, O)
+    W, H = nmflib.nmf.initialise_nmf(
+        X_obs, TARGET_RANK, random_state=synthetic_pcawg_dataset.random_state)
+    X_exp = nmflib.nmf.nmf_mu(W, H, S, O)
     r = nmflib.nmf._initialise_nb_r(X_obs, X_exp)
     loglik = prev_loglik = np.sum(nmflib.nmf.loglik(X_obs, X_exp, r))
     for _ in range(10):
         W = nmflib.nmf._multiplicative_update_W(X_obs, W, H, S, O, r=r)
-        X_exp = nmflib.nmf._nmf_mu(W, H, S, O)
+        X_exp = nmflib.nmf.nmf_mu(W, H, S, O)
         loglik = np.sum(nmflib.nmf.loglik(X_obs, X_exp, r))
         assert loglik > prev_loglik
         prev_loglik = loglik
 
         H = nmflib.nmf._multiplicative_update_H(X_obs, W, H, S, O, r=r)
-        X_exp = nmflib.nmf._nmf_mu(W, H, S, O)
+        X_exp = nmflib.nmf.nmf_mu(W, H, S, O)
         loglik = np.sum(nmflib.nmf.loglik(X_obs, X_exp, r))
         assert loglik > prev_loglik
         prev_loglik = loglik
 
-        X_exp = nmflib.nmf._nmf_mu(W, H, S, O)
+        X_exp = nmflib.nmf.nmf_mu(W, H, S, O)
         r = nmflib.nmf._iterate_nbinom_nmf_r_ml(X_obs, X_exp, r)
         loglik = np.sum(nmflib.nmf.loglik(X_obs, X_exp, r))
         assert loglik > prev_loglik
         prev_loglik = loglik
 
 
-def test_match_signatures():
-    # Generate some random signatures
+@synthetic_nmf_data_dir
+@pytest.mark.parametrize("use_S", [True, False])
+@pytest.mark.parametrize("use_O", [True, False])
+@pytest.mark.parametrize("r", [None, 100])
+@pytest.mark.slow
+def test_fit_nmf_monotonicity(datafiles, use_S, use_O, r):
+    """Make sure the nmf.fit() errors are monotonous."""
+    synthetic_pcawg_dataset = SyntheticPCAWG(datafiles, use_S, use_O, r)
+    X_obs = synthetic_pcawg_dataset.simulate()
+    S = synthetic_pcawg_dataset.S
+    O = synthetic_pcawg_dataset.O  # noqa: E741
+    TARGET_RANK = 10
+
+    # Test the monotonicity of overall errors.
+    nbinom_fit = r is not None
+    max_iter = 100
+    epoch_len = 10
+    W, H, r, n_iter, errors = nmflib.nmf.fit(X_obs,
+                                             TARGET_RANK,
+                                             S,
+                                             O,
+                                             max_iter=max_iter,
+                                             epoch_len=epoch_len,
+                                             nbinom_fit=nbinom_fit,
+                                             verbose=True)
+
+    assert len(errors) <= (max_iter + epoch_len - 1) // epoch_len
+
+    for i in range(len(errors) - 1):
+        assert errors[i + 1] <= errors[i]
+
+
+@pytest.mark.parametrize("use_S", [True, False])
+@pytest.mark.parametrize("use_O", [True, False])
+def test_fit_nmf_small_dataset(use_S, use_O, caplog):
+    """Test fitting a simple NMF dataset with no sampling noise."""
+    caplog.set_level(logging.INFO)
+    nmf_dataset = SimpleNMFData(use_S, use_O)
+    abstol = 1e-30  # Ensure very good convergence.
+    if use_S:
+        S = nmf_dataset.S
+    else:
+        S = None
+    if use_O:
+        O = nmf_dataset.O  # noqa: E741
+    else:
+        O = None  # noqa: E741
+    W, H, r, n_iter, errors = nmflib.nmf.fit(nmf_dataset.X,
+                                             nmf_dataset.rank,
+                                             S,
+                                             O,
+                                             max_iter=float("inf"),
+                                             abstol=abstol)
+    nmf_dataset.check_answer(W, H)
+
+    # Test logging.
+    W, H, r, n_iter, errors = nmflib.nmf.fit(nmf_dataset.X,
+                                             nmf_dataset.rank,
+                                             S,
+                                             O,
+                                             max_iter=100,
+                                             epoch_len=10,
+                                             verbose=True,
+                                             abstol=abstol)
+    assert re.search(r"Iteration 10 after \S+ seconds, error: ", caplog.text)
+    assert re.search(r"Iteration 20 after \S+ seconds, error: ", caplog.text)
+
+
+@synthetic_nmf_data_dir
+@pytest.mark.slow
+def test_mpfit(datafiles):
+    """
+    Make sure nmf.mpfit() works and is (slightly) faster than just fit().
+    """
+    synthetic_pcawg_data = SyntheticPCAWG(datafiles, True, True, 10)
+    X_obs = synthetic_pcawg_data.simulate()
+    S = synthetic_pcawg_data.S
+    O = synthetic_pcawg_data.O  # noqa: E741
+    TARGET_RANK = 20
+
+    # Measure time with multiprocessing.
+    start_time = time.time()
+    mp_res = nmflib.nmf.mpfit(
+        2,
+        2,
+        0,
+        False,
+        X=X_obs,
+        k=TARGET_RANK,
+        S=S,
+        O=O,  # noqa: E741
+        nbinom_fit=True)
+    multiprocess_elapsed = time.time() - start_time
+
+    # Measure time without multiprocessing.
+    start_time = time.time()
+    sp_res = []
+    for i in range(2):
+        sp_res.append(
+            nmflib.nmf.fit(X_obs, TARGET_RANK, S, O, True, random_state=i))
+    single_process_elapsed = time.time() - start_time
+    assert len(mp_res) == len(sp_res) == 2
+    assert single_process_elapsed / multiprocess_elapsed > 1.2
+
+
+def test_match_components():
+    # Generate some random components
     np.random.seed(0)
     K = 10
-    signatures = np.random.dirichlet([0.5] * 96, K)
+    components = np.random.dirichlet([0.5] * 96, K)
     scramble_idx = np.random.choice(K, K, False)
-    scrambled_signatures = signatures[:, scramble_idx]
-    found_idx = nmflib.nmf.match_signatures(scrambled_signatures, signatures)
+    scrambled_components = components[:, scramble_idx]
+    found_idx = nmflib.nmf.match_components(scrambled_components, components)
     assert np.all(found_idx == scramble_idx)
-
-
-def test_context_rate_matrix():
-    # Test with sample indices.
-    sample_names = ['s0', 's1', 's2', 's3']
-    scale_mat = nmflib.nmf.context_rate_matrix(
-        pd.Series([False, True, False, True], index=sample_names), False)
-    assert all(scale_mat.columns == sample_names)
-    scale_mat_trinucs = scale_mat.index.get_level_values(1)
-    for k in [0, 2]:
-        assert all(scale_mat[sample_names[k]].values ==
-                   nmflib.constants.HUMAN_GENOME_TRINUCS[scale_mat_trinucs])
-    for k in [1, 3]:
-        assert all(scale_mat[sample_names[k]].values ==
-                   nmflib.constants.HUMAN_EXOME_TRINUCS[scale_mat_trinucs])
-
-    # Test relative rates
-    scale_mat = nmflib.nmf.context_rate_matrix([False, True, False, True], True)
-    scale_mat_trinucs = scale_mat.index.get_level_values(1)
-    gw_relative = pd.Series(np.repeat(
-        1.0, len(nmflib.constants.HUMAN_GENOME_TRINUCS)),
-                            index=nmflib.constants.HUMAN_GENOME_TRINUCS.index)
-    ew_relative = (nmflib.constants.HUMAN_EXOME_TRINUCS /
-                   nmflib.constants.HUMAN_GENOME_TRINUCS)
-    for k in [0, 2]:
-        assert all(scale_mat[k].values == gw_relative[scale_mat_trinucs])
-    for k in [1, 3]:
-        assert all(scale_mat[k].values == ew_relative[scale_mat_trinucs])
-
-    # Test without sample indices.
-    scale_mat = nmflib.nmf.context_rate_matrix([False, True, False, True],
-                                               False)
-    assert all(scale_mat.columns == [0, 1, 2, 3])
 
 
 def test_nmf_gof():
     """Test nmf.gof() function."""
-    X = SimpleNMFData.X
+    simple_nmf_data = SimpleNMFData()
+    X = simple_nmf_data.X
     X_exp = np.matmul(SimpleNMFData.W_true, SimpleNMFData.H_true)
 
     # Observed is *exactly* as expected - P value should be 0 since no
@@ -306,8 +351,8 @@ def test_nmf_gof():
     assert pval == 0.0
     assert np.all(np.array(data) == 0.0)
 
-    # Create 10 simulations and choose the middle one. That one should have a
-    # midrange likelihood on average.
+    # Create 10 simulations and choose the middle one. That one should have
+    # a midrange likelihood on average.
     sim_X = [scipy.stats.poisson.rvs(X_exp, random_state=0) for k in range(11)]
     sim_X_logliks = [
         np.sum(scipy.stats.poisson.logpmf(X, X_exp)) for X in sim_X
@@ -316,6 +361,25 @@ def test_nmf_gof():
     sim_X = sorted(sim_X, key=lambda x: x[0])
     _, pval, _, _ = nmflib.nmf.gof(sim_X[5][1], X_exp, random_state=0)
     assert 0.2 <= pval <= 0.8
+
+
+@synthetic_nmf_data_dir
+@pytest.mark.slow
+def test_parallel_gof(datafiles):
+    """Make sure nmf.mpfit() works and is faster than just fit()."""
+    true_r = 10
+    synthetic_pcawg_data = SyntheticPCAWG(datafiles, true_r)
+    X_obs = synthetic_pcawg_data.simulate()
+    X_exp = synthetic_pcawg_data.X_exp
+
+    # Measure time with and without multiprocessing.
+    start_time = time.time()
+    nmflib.nmf.gof(X_obs, X_exp, 100, r=true_r, n_processes=2)
+    multiprocess_elapsed = time.time() - start_time
+    start_time = time.time()
+    nmflib.nmf.gof(X_obs, X_exp, 200, r=true_r, n_processes=1)
+    single_process_elapsed = time.time() - start_time
+    assert single_process_elapsed / multiprocess_elapsed > 1.2
 
 
 def test_signatures_model():
@@ -334,79 +398,6 @@ def test_signatures_model():
             'Poisson-NMF(M=4, N=4, K=1) *')
 
 
-@pytest.mark.datafiles('test_data/ground.truth.syn.catalog.csv.gz',
-                       'test_data/ground.truth.syn.sigs.csv.gz',
-                       'test_data/ground.truth.syn.exposures.csv.gz')
-def test_mpfit(datafiles):
-    """Make sure nmf.mpfit() works and is faster than just fit()."""
-    datafiles = str(datafiles)
-    true_r = 10
-    synthetic_pcawg_data = SyntheticPCAWG(datafiles, true_r)
-    X_obs = synthetic_pcawg_data.simulate()
-    S = synthetic_pcawg_data.S
-    O = synthetic_pcawg_data.O  # noqa: E741
-    TARGET_RANK = 20
-
-    # Measure time with and without multiprocessing.
-    start_time = time.time()
-    mp_res = nmflib.nmf.mpfit(2,
-                              X_obs,
-                              TARGET_RANK,
-                              S,
-                              O,
-                              True,
-                              verbose=True,
-                              random_state=0,
-                              n_processes=2)
-    multiprocess_elapsed = time.time() - start_time
-    start_time = time.time()
-    sp_res = []
-    for i in range(2):
-        sp_res.append(
-            nmflib.nmf.fit(X_obs,
-                           TARGET_RANK,
-                           S,
-                           O,
-                           True,
-                           verbose=True,
-                           random_state=i))
-    single_process_elapsed = time.time() - start_time
-    assert len(mp_res) == len(sp_res) == 2
-    assert single_process_elapsed / multiprocess_elapsed > 1.2
-
-
-@pytest.mark.datafiles('test_data/ground.truth.syn.catalog.csv.gz',
-                       'test_data/ground.truth.syn.sigs.csv.gz',
-                       'test_data/ground.truth.syn.exposures.csv.gz')
-def test_parallel_gof(datafiles):
-    """Make sure nmf.mpfit() works and is faster than just fit()."""
-    datafiles = str(datafiles)
-    true_r = 10
-    synthetic_pcawg_data = SyntheticPCAWG(datafiles, true_r)
-    X_obs = synthetic_pcawg_data.simulate()
-    X_exp = synthetic_pcawg_data.X_exp
-
-    # Measure time with and without multiprocessing.
-    start_time = time.time()
-    nmflib.nmf.gof(X_obs, X_exp, 100, r=true_r, n_processes=2)
-    multiprocess_elapsed = time.time() - start_time
-    start_time = time.time()
-    nmflib.nmf.gof(X_obs, X_exp, 200, r=true_r, n_processes=1)
-    single_process_elapsed = time.time() - start_time
-    assert single_process_elapsed / multiprocess_elapsed > 1.2
-
-
-def test_validate_is_ndarray():
-    """Test nmf._validate_is_ndarray()."""
-    assert nmflib.nmf._validate_is_ndarray(None) is None
-    arr = np.arange(6).reshape(3, 2)
-    df = pd.DataFrame(arr)
-    assert isinstance(nmflib.nmf._validate_is_ndarray(arr), np.ndarray)
-    assert isinstance(nmflib.nmf._validate_is_ndarray(df), np.ndarray)
-    with pytest.raises(ValueError):
-        nmflib.nmf._validate_is_ndarray("Not an array")
-
-
 def test_h_confint():
     """Test LRT and confidence interval computation.
 
@@ -414,7 +405,7 @@ def test_h_confint():
     """
     simple_nmf_data = SimpleNMFData()
     W, H, _, _, _ = nmflib.nmf.fit(simple_nmf_data.X, SimpleNMFData.k)
-    idx = nmflib.nmf.match_signatures(simple_nmf_data.W_true, W)
+    idx = nmflib.nmf.match_components(simple_nmf_data.W_true, W)
     W = W[:, idx]
     H = H[idx, :]
 

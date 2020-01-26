@@ -6,13 +6,14 @@ import os
 import multiprocessing
 import sys
 import time
-import tqdm
 
 import numpy as np
 import pandas as pd
 import scipy.optimize
 from scipy.special import digamma, polygamma
 import sklearn.metrics.pairwise
+
+import tqdm
 
 
 def _ensure_pos(arr, epsilon=np.finfo(np.float32).eps, inplace=True):
@@ -276,7 +277,7 @@ def _nb_p(mu, r):
     return p
 
 
-def _nmf_mu(W, H, S=None, O=None):  # noqa: E741
+def nmf_mu(W, H, S=None, O=None):  # noqa: E741
     """Helper function for computing E[X] = (WH + O) * S."""
     WHOS = np.matmul(W, H)
     if O is not None:
@@ -344,7 +345,7 @@ def _iterate_nmf_fit(
     if update_W:
         W = _multiplicative_update_W(X, W, H, S, O, r)
     H = _multiplicative_update_H(X, W, H, S, O, r)
-    mu = _nmf_mu(W, H, S, O)
+    mu = nmf_mu(W, H, S, O)
     if r_fit_method is not None:
         if r_fit_method == 'mm':
             r, _ = fit_nbinom_nmf_r_mm(X, mu, W.shape[1])
@@ -442,7 +443,7 @@ def loglik(X, X_exp=None, r=None, W=None, H=None, S=None, O=None):  # noqa: E741
         if W is None or H is None:
             raise ValueError("Either 'X_exp' or both W and H must be provided.")
         else:
-            X_exp = _nmf_mu(W, H, S, O)
+            X_exp = nmf_mu(W, H, S, O)
     if r is None:
         logliks = scipy.stats.poisson.logpmf(X, X_exp)
     else:
@@ -662,7 +663,7 @@ def fit(
     if H_init is not None:
         H = H_init
     if nbinom_fit:
-        X_exp = _nmf_mu(W, H, S, O)
+        X_exp = nmf_mu(W, H, S, O)
         r = _initialise_nb_r(X, X_exp)
 
     # Set up initial values.
@@ -674,7 +675,7 @@ def fit(
     while True:
         # Test for convergence and optionally update r every epoch_len
         # iterations.
-        X_exp = _nmf_mu(W, H, S, O)
+        X_exp = nmf_mu(W, H, S, O)
 
         if nbinom_fit:
             r, _ = fit_nbinom_nmf_r_ml(X, X_exp, r)
@@ -683,6 +684,7 @@ def fit(
 
         # Perform `epoch_len` updates (without updating r).
         for _ in range(epoch_len):
+            n_iter += 1
             W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, update_W=update_W)
 
         # Check for convergence.
@@ -696,6 +698,8 @@ def fit(
         if previous_error is None:
             previous_error = error
         elif previous_error - error < abstol * epoch_len:
+            break
+        elif n_iter >= max_iter:
             break
         previous_error = error
 
@@ -714,36 +718,32 @@ def fit(
     return W, H, r, n_iter, errors
 
 
-def unpack_args_fit(args_tuple):
+def _fit_worker_wrapper(args_kwargs_tuple):
     """Run fit(), except unpack arguments first."""
-    return fit(*args_tuple)
+    args, kwargs = args_kwargs_tuple
+    return fit(*args, **kwargs)
 
 
 def mpfit(
         random_inits,
-        X,
-        k,
-        S=None,
-        O=None,  # noqa: E741
-        nbinom_fit=False,
-        nb_fit_freq_base=1.5,
-        max_iter=200,
-        abstol=1e-4,
-        random_state=None,
         n_processes=None,
+        random_state=None,
         verbose=False,
-        epoch_len=10):
+        *args,
+        **kwargs):
     """Parallelised NMF fitting.
 
     Args:
         random_inits (int): The number of random initialisations to fit using
             NMF.
+        n_processes (int): Number of processes to spawn. By default,
+            :func:`os.cpu_count` - 1  is used.
         random_state (int): If provided, then the random states used are for
             each random initialisation are `random_state` +
             np.array(range(random_inits)).
-        n_processes (int): Number of processes to spawn. By default,
-            :func:`os.cpu_count` - 1  is used.
         verbose (bool): Whether to show a progress bar.
+        args (list): Positional arguments for :func:`fit`.
+        kwargs (dict): Keyword arguments for :func:`fit`.
 
     Returns:
         list: A list of outputs from :func:`fit`.
@@ -757,23 +757,22 @@ def mpfit(
     # Create argument list for fit(). The last three arguments are 'verbose',
     # and 'random_state'.
     if random_state is None:
-        args_list = ([(X, k, S, O, nbinom_fit, nb_fit_freq_base, max_iter,
-                       abstol, False, None, None, None, None, epoch_len)]
-                     * random_inits)
+        args_list = [(args, kwargs)] * random_inits
     else:
         args_list = []
         for i in range(random_inits):
-            args_list.append((X, k, S, O, nbinom_fit, nb_fit_freq_base,
-                              max_iter, abstol, False, random_state + i, None,
-                              None, None, epoch_len))
+            cur_kwargs = kwargs.copy()
+            cur_kwargs['random_state'] = random_state + i
+            args_list.append((args, cur_kwargs))
     process_pool = multiprocessing.get_context("spawn").Pool(n_processes)
     if verbose:
         fitted_res = list(
-            tqdm.tqdm(process_pool.imap_unordered(unpack_args_fit, args_list),
+            tqdm.tqdm(process_pool.imap_unordered(_fit_worker_wrapper,
+                                                  args_list),
                       total=random_inits))
     else:
         fitted_res = list(
-            process_pool.imap_unordered(unpack_args_fit, args_list))
+            process_pool.imap_unordered(_fit_worker_wrapper, args_list))
     return fitted_res
 
 
@@ -1225,7 +1224,7 @@ class SingleNMFModel:
 
         elapsed = time.time() - start_time
 
-        X_pred = _nmf_mu(W_best, H_best, self.S, self.O)
+        X_pred = nmf_mu(W_best, H_best, self.S, self.O)
         fitted_loglik = np.sum(loglik(self.X, X_pred, r_best))
 
         # Save results.
