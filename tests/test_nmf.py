@@ -157,22 +157,18 @@ def test_initialise_nmf(datafiles, use_S, use_O, r):
     assert np.all(np.sum(H_init, 0) == np.sum(X, 0))
 
 
-@pytest.mark.parametrize("method", ["ml", "mm"])
-def test_iterate_nbinom_nmf_r(method):
+def test_iterate_nbinom_nmf_r():
     """
-    Test nmf._iterate_nbinom_nmf_r_ml() and nmf._iterate_nbinom_nmf_r_mm().
+    Test nmf._iterate_nbinom_nmf_r_ml().
     """
     mu = 20
     true_r = 10
     p = nmflib.nmf._nb_p(mu, true_r)
     np.random.seed(0)
     x = scipy.stats.nbinom.rvs(true_r, p, size=int(1e5))
-    if method == 'ml':
-        r = nmflib.nmf._initialise_nb_r(x, mu)
-        for _ in range(10):
-            r = nmflib.nmf._iterate_nbinom_nmf_r_ml(x, mu, r)
-    else:
-        r, _ = nmflib.nmf.fit_nbinom_r_mm(x, mu, len(x) - 1)
+    r = nmflib.nmf._initialise_nb_r(x, mu)
+    for _ in range(10):
+        r = nmflib.nmf._iterate_nbinom_nmf_r_ml(x, mu, r)
     assert 9.9 < r < 10.1  # Should be ~10.0
 
 

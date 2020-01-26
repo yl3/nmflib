@@ -313,7 +313,7 @@ def _iterate_nmf_fit(
         S=None,
         O=None,  # noqa: 471
         r=None,
-        r_fit_method=None,
+        update_r=False,
         update_W=True):
     """Perform a single iteration of W, H and r updates.
 
@@ -330,27 +330,19 @@ def _iterate_nmf_fit(
             representing the additive offset term.
         r (float): Non-negative value that, if provided, is used as the
             overdispersion parameter for a negative binomial NMF model.
-        r_fit_method (str): Method for fitting overdispersion parameter r. If
-            None, fitting is not done. Otherwise, must either be 'ml' for
-            maximum likelihood or 'mm' for method of moments.
+        update_r (bool): Whether to update `r`.
 
     Returns:
         numpy.ndarray: The updated W.
         numpy.ndarray: The updated H.
         float: The updated r.
     """
-    if r_fit_method not in (None, 'ml', 'mm'):
-        raise ValueError('r_fit_method must be in (None, "ml", "mm").')
-
     if update_W:
         W = _multiplicative_update_W(X, W, H, S, O, r)
     H = _multiplicative_update_H(X, W, H, S, O, r)
     mu = nmf_mu(W, H, S, O)
-    if r_fit_method is not None:
-        if r_fit_method == 'mm':
-            r, _ = fit_nbinom_nmf_r_mm(X, mu, W.shape[1])
-        elif r_fit_method == 'ml':
-            r, _ = fit_nbinom_nmf_r_ml(X, mu, r)
+    if update_r:
+        r, _ = fit_nbinom_nmf_r_ml(X, mu, r)
 
     return W, H, r
 
@@ -377,30 +369,6 @@ def _get_cpu_count(multiprocess):
     else:
         processes_to_use = multiprocess
     return processes_to_use
-
-
-def fit_nbinom_r_mm(X, mu, dof, reltol=0.001):
-    """Fit the negative binomial dispersion parameter via method of moments."""
-    prev_r = _initialise_nb_r(X, mu)
-    iter = 0
-    while True:
-        iter += 1
-        numerator = np.sum((X - mu)**2 / (mu + mu**2 / prev_r)) - dof
-        denominator = np.sum((X - mu)**2 / (mu + prev_r)**2)
-        delta = numerator / denominator
-        r = prev_r - delta
-        if abs(r - prev_r) / prev_r < reltol:
-            break
-        prev_r = r
-    return r, iter
-
-
-def fit_nbinom_nmf_r_mm(X, mu, k, reltol=0.001):
-    """Fit the negative binomial NMF dispersion parameter via method of moments.
-    """
-    free_params = np.prod(X.shape) - k * (np.sum(X.shape) - 1)
-    r, iter = fit_nbinom_r_mm(X, mu, free_params, reltol)
-    return r, iter
 
 
 def fit_nbinom_nmf_r_ml(X, mu, r_init, reltol=0.001):
