@@ -342,7 +342,7 @@ def _iterate_nmf_fit(
     H = _multiplicative_update_H(X, W, H, S, O, r)
     mu = nmf_mu(W, H, S, O)
     if update_r:
-        r, _ = fit_nbinom_nmf_r_ml(X, mu, r)
+        r, _ = _iterate_nbinom_nmf_r_ml(X, mu, r)
 
     return W, H, r
 
