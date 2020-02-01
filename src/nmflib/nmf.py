@@ -1038,6 +1038,8 @@ def h_confint(
     """
     if fit_kwargs is None:
         fit_kwargs = dict()
+    if 'max_iter' not in fit_kwargs:
+        fit_kwargs['max_iter'] = float('inf')
     if S is None:
         S_colvec = None
     else:
