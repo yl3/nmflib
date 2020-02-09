@@ -16,14 +16,15 @@ import sklearn.metrics.pairwise
 import tqdm
 
 
-def _ensure_pos(arr, epsilon=np.finfo(np.float32).eps, inplace=True):
+def _ensure_pos(arr, inplace=True):
     """Ensure a (very low) epsilon floor for arr."""
-    sel = arr < epsilon
+    eps = np.finfo(arr.dtype).eps
+    sel = arr < eps
     if inplace:
-        arr[sel] = epsilon
+        arr[sel] = eps
     else:
         arr2 = arr.copy()
-        arr2[sel] = epsilon
+        arr2[sel] = eps
         return arr2
 
 
@@ -620,7 +621,7 @@ def fit(
         k = W_fixed.shape[1]
 
     # Make sure the matrices are numpy arrays.
-    X = _validate_is_ndarray(X)
+    X = _validate_is_ndarray(X).astype(np.float64)
     S = _validate_is_ndarray(S)
     O = _validate_is_ndarray(O)  # noqa: E741
 
