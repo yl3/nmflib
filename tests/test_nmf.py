@@ -91,6 +91,8 @@ class SyntheticPCAWG():
                  r=None,
                  random_state=0):
         self.r = r
+        self.S = None
+        self.O = None  # noqa: E741
         self.random_state = random_state
         self._load_syn_data(datafiles, use_S, use_O)
 
@@ -150,11 +152,20 @@ def test_initialise_nmf(datafiles, use_S, use_O, r):
     X = synthetic_pcawg_dataset.simulate()
     M, N = X.shape
     k = 21
-    W_init, H_init = nmflib.nmf.initialise_nmf(X, k)
+    W_init, H_init = nmflib.nmf.initialise_nmf(X, k, synthetic_pcawg_dataset.S,
+                                               synthetic_pcawg_dataset.O)
     assert W_init.shape == (M, k)
+    assert np.all(W_init > 0)
+    assert np.all(H_init > 0)
     assert H_init.shape == (k, N)
     assert np.allclose(np.sum(W_init, 0), 1)
-    assert np.all(np.sum(H_init, 0) == np.sum(X, 0))
+    if use_S:
+        X_exp = X / synthetic_pcawg_dataset.S
+    else:
+        X_exp = X
+    if not use_O:
+        # This is not accurate, since O can be larger than X sometimes.
+        assert np.allclose(np.sum(H_init, 0), np.sum(X_exp, 0))
 
 
 def test_iterate_nbinom_nmf_r():
@@ -237,7 +248,8 @@ def test_fit_nmf_monotonicity(datafiles, use_S, use_O, r):
                                              max_iter=max_iter,
                                              epoch_len=epoch_len,
                                              nbinom_fit=nbinom_fit,
-                                             verbose=True)
+                                             verbose=True,
+                                             max_iter_error=False)
 
     assert len(errors) <= (max_iter + epoch_len - 1) // epoch_len
 
@@ -414,8 +426,8 @@ def test_h_confint():
     x_obs = simple_nmf_data.X[:, sample_idx]
     h_hat = H[:, sample_idx]
     output_tuple = nmflib.nmf.hk_confint(x_obs, W, sig_idx, h_hat=h_hat)
-    _, cint_low, cint_high, pval, _, ml_loglik, restricted_loglik, _, _ = \
-        output_tuple
+    (_, _, _, pval, _, ml_loglik, restricted_loglik, _, cint_low, cint_high, _,
+     _) = output_tuple
     assert pval > 0.2
     assert cint_low == 0
     target_f = nmflib.nmf._NMFProfileLoglikFitter(x_obs.reshape(-1, 1), W,
@@ -437,8 +449,8 @@ def test_h_confint():
     x_obs = simple_nmf_data.X[:, sample_idx]
     h_hat = H[:, sample_idx]
     output_tuple = nmflib.nmf.hk_confint(x_obs, W, sig_idx, h_hat=h_hat)
-    _, cint_low, cint_high, pval, _, ml_loglik, restricted_loglik, _, _ = \
-        output_tuple
+    (_, _, _, pval, _, ml_loglik, restricted_loglik, _, cint_low, cint_high, _,
+     _) = output_tuple
     assert ml_loglik > restricted_loglik
     assert pval < 0.01
     assert cint_low > 0
