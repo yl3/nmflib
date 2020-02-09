@@ -1129,6 +1129,35 @@ def match_components(W1, W2):
     return W2_idx
 
 
+def estimate_contrib(W, H, S=None, by='sample'):
+    """
+    Compute the total contribution from each component for each sample or
+    category.
+
+    Args:
+        by (str): 'sample' to compute number of mutations contributed by each
+            signature in each sample. 'category' to compute the number of
+            mutations contributed by each signature for each category.
+    """
+    # After computation, `sig_contribs` is an array of shape
+    # (<samples>, <categories>, <components>).
+    sig_contribs = []
+    if S is None:
+        for i in range(H.shape[1]):
+            sig_contribs.append(W * H[:, [i]].T)
+    else:
+        for i in range(H.shape[1]):
+            sig_contribs.append(S[:, [i]] * W * H[:, [i]].T)
+    if by == 'category':
+        axis = 0
+    elif by == 'sample':
+        axis = 1
+    else:
+        raise ValueError(f"Unrecognized value '{by}' for argument by.")
+    out_array = np.sum(sig_contribs, axis=axis)
+    return out_array
+
+
 class SingleNMFModel:
     """An NMF model for a mutation count matrix.
 
