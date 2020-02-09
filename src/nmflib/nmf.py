@@ -625,6 +625,18 @@ def fit(
     S = _validate_is_ndarray(S)
     O = _validate_is_ndarray(O)  # noqa: E741
 
+    # If S is very small (and presumable very large), numerical instability
+    # follows. Therefore, adjust S such that the values are close to 1 on
+    # average. Adjust S here and readjust H just before returning the values.
+    if S is not None:
+        S = _ensure_pos(S, inplace=False)
+        median_S = np.median(S)
+        S = S / median_S
+        if H_init is not None:
+            H_init = H_init * median_S
+        if O is not None:
+            O = O * median_S  # noqa: E741
+
     # Initialise W and H.
     W, H = initialise_nmf(X, k, S, O, random_state=random_state)
     if W_fixed is not None:
@@ -687,6 +699,8 @@ def fit(
         W_colsums = np.sum(W, axis=0)
         W /= W_colsums[np.newaxis, :]
         H *= W_colsums[:, np.newaxis]
+    if S is not None:
+        H /= median_S
     return W, H, r, n_iter, errors
 
 
