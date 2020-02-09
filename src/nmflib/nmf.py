@@ -27,7 +27,7 @@ def _ensure_pos(arr, epsilon=np.finfo(np.float32).eps, inplace=True):
         return arr2
 
 
-def initialise_nmf(X, k, random_state=None):
+def initialise_nmf(X, k, S=None, O=None, random_state=None):  # noqa: E741
     """Initialise count NMF.
 
     W is initialised from a flat Dirichlet distribution and H is initialised by
@@ -48,7 +48,11 @@ def initialise_nmf(X, k, random_state=None):
     np.random.seed(random_state)
     M, N = X.shape
     W = scipy.stats.dirichlet.rvs([1] * M, size=k).T
-    H = np.array([scipy.stats.multinomial.rvs(mut_count, [1 / k] * k)
+    if S is not None:
+        X = X / S
+    if O is not None:
+        X = _ensure_pos(X - O, inplace=False)
+    H = np.array([np.random.dirichlet([1 / k] * k) * mut_count
                   for mut_count in np.sum(X, 0)]).T
     return W, H
 
@@ -622,7 +626,7 @@ def fit(
     O = _validate_is_ndarray(O)  # noqa: E741
 
     # Initialise W and H.
-    W, H = initialise_nmf(X, k, random_state=random_state)
+    W, H = initialise_nmf(X, k, S, O, random_state=random_state)
     if W_fixed is not None:
         update_W = False
         W = W_fixed
