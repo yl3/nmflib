@@ -646,6 +646,9 @@ def fit(
         update_W = True
     if H_init is not None:
         H = H_init
+    # Make sure W and H are positive.
+    W = _ensure_pos(W, inplace=False)
+    H = _ensure_pos(H, inplace=False)
     if nbinom_fit:
         X_exp = nmf_mu(W, H, S, O)
         r = _initialise_nb_r(X, X_exp)
@@ -668,6 +671,9 @@ def fit(
         for _ in range(epoch_len):
             n_iter += 1
             W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, update_W=update_W)
+        if update_W:
+            _ensure_pos(W)
+        _ensure_pos(H)
 
         # Check for convergence.
         X_exp = nmf_mu(W, H, S, O)
