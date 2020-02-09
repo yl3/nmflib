@@ -908,9 +908,10 @@ def hk_confint(
         alpha=0.05,
         r=None,
         h_hat=None,
+        n_inits=10,
         brentq_xtol=1e-5,
         brentq_rtol=1e-5,
-        fit_kwargs=None):
+        **fit_kwargs):
     """Compute LRT and confidence intervals for a signature's exposure.
 
     Compute the likelihood-ratio test for the null hypothesis that signature `k`
@@ -929,6 +930,7 @@ def hk_confint(
         r (float): If provided, negative binomial model will be used.
         h_hat (numpy.ndarray): 1D array of previously fitted signature exposures
             across k signatures.
+        n_inits (int): Number of random initiations when fitting h.
         brentq_xtol (float): Parameter `xtol` for :func:`scipy.optimize.brentq`.
         brentq_rtol (float): Parameter `rtol` for :func:`scipy.optimize.brentq`.
         fit_kwargs (dict): Additional keyword arguments for :func:`fit`.
@@ -953,8 +955,6 @@ def hk_confint(
         S = S.reshape(-1, 1)
     if O is not None:
         O = O.reshape(-1, 1)  # noqa: E741
-    if fit_kwargs is None:
-        fit_kwargs = {}
     if 'max_iter' not in fit_kwargs:
         fit_kwargs['max_iter'] = float('inf')
     if 'abstol' not in fit_kwargs:
@@ -962,13 +962,19 @@ def hk_confint(
     if h_hat is not None:
         h_hat = h_hat.reshape(-1, 1)
     else:
-        _, h_hat, _, _, _ = fit(x_obs,
-                                None,
-                                S,
-                                O,
-                                W_fixed=W,
-                                r=r,
-                                **fit_kwargs)
+        best_error = float('inf')
+        for _ in range(n_inits):
+            _, h_hat, _, _, errors = fit(x_obs.reshape(-1, 1),
+                                         None,
+                                         S,
+                                         O,
+                                         W_fixed=W,
+                                         r=r,
+                                         **fit_kwargs)
+            if errors[-1] < best_error:
+                best_error = errors[-1]
+                best_h_hat = h_hat
+        h_hat = best_h_hat
 
     # Compute LRT for signature sig_idx having zero exposure.
     h0_chi2_pval, h0_chi2_stat, ml_loglik, h0_loglik, _ = hk_lrt(
@@ -979,7 +985,7 @@ def hk_confint(
     chisq_cutoff = scipy.stats.chi2.ppf(1 - alpha, 1)
     h0_loglik_cutoff = ml_loglik - chisq_cutoff / 2
 
-    # Compute the lower end of the confidence interval. First check if zero
+    # Compute the *lower* end of the confidence interval. First check if zero
     # is included in the confidence interval.
     if h0_loglik >= h0_loglik_cutoff:
         confint_lower_bound = 0
@@ -996,7 +1002,7 @@ def hk_confint(
             full_output=True,
             disp=True)
 
-    # Compute the upper end of the confidence interval.
+    # Compute the *upper* end of the confidence interval.
     target_f = _NMFProfileLoglikFitter(x_obs, W, h_hat, sig_idx, S, O, r,
                                        **fit_kwargs)._profile_ml
     upper_bound_upper_bound = np.sum(h_hat)
@@ -1011,8 +1017,21 @@ def hk_confint(
         full_output=True,
         disp=True)
 
-    return (h_hat[sig_idx, 0], confint_lower_bound, confint_upper_bound,
-            h0_chi2_pval, h0_chi2_stat, ml_loglik, h0_loglik, r_lower_bound,
+    # Compute the observed mutation counts (i.e. adjusted for S).
+    if S is None:
+        obs_hi_hat = h_hat[sig_idx, 0]
+        obs_confint_lower_bound = confint_lower_bound
+        obs_confint_upper_bound = confint_upper_bound
+    else:
+        obs_hi_hat = np.sum(W[:, [sig_idx]] * h_hat[sig_idx, 0] * S)
+        obs_confint_lower_bound = np.sum(
+            W[:, [sig_idx]] * confint_lower_bound * S)
+        obs_confint_upper_bound = np.sum(
+            W[:, [sig_idx]] * confint_upper_bound * S)
+
+    return (obs_hi_hat, obs_confint_lower_bound, obs_confint_upper_bound,
+            h0_chi2_pval, h0_chi2_stat, ml_loglik, h0_loglik, h_hat[sig_idx, 0],
+            confint_lower_bound, confint_upper_bound, r_lower_bound,
             r_upper_bound)
 
 
@@ -1024,9 +1043,10 @@ def h_confint(
         alpha=0.05,
         r=None,
         h_hat=None,
+        n_inits=10,
         brentq_xtol=1e-5,
         brentq_rtol=1e-5,
-        fit_kwargs=None):
+        **fit_kwargs):
     """Compute LRT and confidence intervals for each signature's exposure.
 
     Compute the likelihood-ratio test for the null hypothesis for each signature
@@ -1044,6 +1064,7 @@ def h_confint(
         r (float): If provided, negative binomial model will be used.
         h_hat (numpy.ndarray): 1D array of previously fitted signature exposures
             across k signatures.
+        n_inits (int): Number of random initiations when fitting h.
         brentq_xtol (float): Parameter `xtol` for :func:`scipy.optimize.brentq`.
         brentq_rtol (float): Parameter `rtol` for :func:`scipy.optimize.brentq`.
         fit_kwargs (dict): Additional keyword arguments for :func:`fit`. See
@@ -1053,8 +1074,6 @@ def h_confint(
         pandas.DataFrame: A data frame of confidence intervals and likelihood
             ratio results.
     """
-    if fit_kwargs is None:
-        fit_kwargs = dict()
     if 'max_iter' not in fit_kwargs:
         fit_kwargs['max_iter'] = float('inf')
     if S is None:
@@ -1066,21 +1085,27 @@ def h_confint(
     else:
         O_colvec = O.reshape(-1, 1)
     if h_hat is None:
-        _, h_hat, _, _, _ = fit(x_obs.reshape(-1, 1),
-                                None,
-                                S_colvec,
-                                O_colvec,
-                                W_fixed=W,
-                                r=r,
-                                **fit_kwargs)
-        h_hat = h_hat.reshape(-1)  # hk_confint() requires an 1D array.
+        best_error = float('inf')
+        for _ in range(n_inits):
+            _, h_hat, _, _, errors = fit(x_obs.reshape(-1, 1),
+                                         None,
+                                         S_colvec,
+                                         O_colvec,
+                                         W_fixed=W,
+                                         r=r,
+                                         **fit_kwargs)
+            if errors[-1] < best_error:
+                best_error = errors[-1]
+                best_h_hat = h_hat
+        h_hat = best_h_hat.reshape(-1)  # hk_confint() requires an 1D array.
     output_tuples = []
     for sig_idx in range(len(h_hat)):
         output_tuple = hk_confint(x_obs, W, sig_idx, S, O, alpha, r, h_hat,
-                                  brentq_xtol, brentq_rtol, fit_kwargs)
+                                  brentq_xtol, brentq_rtol, **fit_kwargs)
         output_tuples.append(output_tuple)
-    columns = ('h', 'cint_low', 'cint_high', 'pval', 'chi2_stat', 'ml_loglik',
-               'h0_loglik', 'r_lower_bound', 'r_upper_bound')
+    columns = ('obs_muts', 'obs_muts_cint_low', 'obs_muts_cint_high', 'pval',
+               'chi2_stat', 'ml_loglik', 'h0_loglik', 'h', 'h_cint_low',
+               'h_cint_high', 'r_lower_bound', 'r_upper_bound')
     out_df = pd.DataFrame(output_tuples, columns=columns)
     return out_df
 
@@ -1275,7 +1300,7 @@ class SingleNMFModel:
         return bic
 
     def predict(self, X_new=None, S_new=None, O_new=None, alpha=0.05,
-                verbose=False, **kwargs):
+                n_inits=10, verbose=False, **kwargs):
         """Fit H MLEs and alpha-confidence intervals for a new count matrix.
 
         Args:
@@ -1285,6 +1310,8 @@ class SingleNMFModel:
                 mutation counts. If None, then :attr:`X` is use instead.
             S_new (array-like): Scaling matrix for `X_new`.
             O_new (array-like): Offset matrix for `X_new`.
+            n_inits (int): Number of random initialisations when fitting
+                exposures.
             verbose (bool): Whether to print a progress bar.
             kwargs (dict): Additional keyword arguments for :func:`h_confint`.
 
@@ -1318,7 +1345,8 @@ class SingleNMFModel:
             else:
                 cur_O = O_new[sample].values
             confint_df = h_confint(X_new[sample].values, self.fitted['W'],
-                                   cur_S, cur_O, alpha, self.fitted['r'])
+                                   cur_S, cur_O, alpha, self.fitted['r'],
+                                   n_inits=n_inits, **kwargs)
             confint_df.index = pd.MultiIndex.from_frame(
                 pd.DataFrame({'signature': range(self.rank), 'sample': sample}))
             confint_dfs.append(confint_df)
