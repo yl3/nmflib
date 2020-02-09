@@ -659,8 +659,6 @@ def fit(
     while True:
         # Test for convergence and optionally update r every epoch_len
         # iterations.
-        X_exp = nmf_mu(W, H, S, O)
-
         if nbinom_fit:
             r, _ = fit_nbinom_nmf_r_ml(X, X_exp, r)
             if verbose:
@@ -672,6 +670,7 @@ def fit(
             W, H, r = _iterate_nmf_fit(X, W, H, S, O, r, update_W=update_W)
 
         # Check for convergence.
+        X_exp = nmf_mu(W, H, S, O)
         error = _divergence(X, X_exp, r)
         errors.append(error)
         if verbose:
