@@ -1,9 +1,8 @@
 """Nonnegative matrix factorisation code for count data."""
 # Copyright (C) 2019 Yilong Li (yilong.li.yl3@gmail.com) - All Rights Reserved
 
+import joblib
 import logging
-import os
-import multiprocessing
 import sys
 import time
 
@@ -53,8 +52,10 @@ def initialise_nmf(X, k, S=None, O=None, random_state=None):  # noqa: E741
         X = X / S
     if O is not None:
         X = _ensure_pos(X - O, inplace=False)
-    H = np.array([np.random.dirichlet([1 / k] * k) * mut_count
-                  for mut_count in np.sum(X, 0)]).T
+    H = np.array([
+        np.random.dirichlet([1 / k] * k) * mut_count
+        for mut_count in np.sum(X, 0)
+    ]).T
     return W, H
 
 
@@ -351,30 +352,6 @@ def _iterate_nmf_fit(
     return W, H, r
 
 
-def _get_cpu_count(multiprocess):
-    """Determine number of processes to use.
-
-    Args:
-        multiprocess (bool or int): Whether to use multiprocessing. If int, then
-            then that number of parallel processes are spawned. If True, then
-            the number of processes is set to :func:`os.cpu_count` - 1.
-
-    Returns:
-        int: Number of processes to use.
-    """
-    if (not isinstance(multiprocess, bool)
-            and not (isinstance(multiprocess, int) and multiprocess >= 2)):
-        raise ValueError("Parameter 'multiprocess' must either be a "
-                         "boolean or >= 2.")
-    if multiprocess is False:
-        processes_to_use = 1
-    elif multiprocess is True:
-        processes_to_use = os.cpu_count() - 1
-    else:
-        processes_to_use = multiprocess
-    return processes_to_use
-
-
 def fit_nbinom_nmf_r_ml(X, mu, r_init, reltol=0.001):
     """
     Fit the negative binomial NMF dispersion parameter via maximum likelihood.
@@ -453,11 +430,8 @@ def calc_bic(loglik, k, n):
     return bic
 
 
-def _sim_loglik_helper_func(params):
+def _sim_loglik_helper_func(X, sim_count, X_exp, r, p):
     """A helper function for computing simulated log-likelihoods.
-
-    Note that all parameters below must be provided as a tuple to satisfy
-    multiprocessing.Pool.imap_unordered().
 
     Args:
         X (array-like): Observed counts: a nonnegative integer matrix of shape
@@ -473,7 +447,6 @@ def _sim_loglik_helper_func(params):
         numpy.ndarray: An array of simulated log-likelihoods of shape
             (sim_count, X.shape[1]).
     """
-    X, sim_count, X_exp, r, p = params
     sim_logliks = []
     for _ in range(sim_count):
         if r is not None and p is not None:
@@ -490,7 +463,13 @@ def _sim_loglik_helper_func(params):
     return sim_logliks
 
 
-def gof(X, X_exp, sim_count=None, random_state=None, r=None, n_processes=1):
+def gof(X,
+        X_exp,
+        sim_count=None,
+        random_state=None,
+        r=None,
+        n_processes=1,
+        n_threads=None):
     """Bootstrapped goodness-of-fit for count data NMF.
 
     Given that X ~ Poisson(X_exp), compute the P value for each column in X
@@ -507,6 +486,8 @@ def gof(X, X_exp, sim_count=None, random_state=None, r=None, n_processes=1):
         r (float): A positive dispersion parameter. If None, then a Poisson
             model is assumed.
         n_processes (int): Number of processes to use.
+        n_threads (int): Number of processes to use per process. By default,
+            max(cpu_count() // effective_n_jobs, 1).
 
     Returns:
         gof_D (float): KS test statistic.
@@ -533,13 +514,14 @@ def gof(X, X_exp, sim_count=None, random_state=None, r=None, n_processes=1):
     else:
         p = None
     if n_processes == 1:
-        sim_logliks = _sim_loglik_helper_func((X, sim_count, X_exp, r, p))
+        sim_logliks = _sim_loglik_helper_func(X, sim_count, X_exp, r, p)
         sim_logliks = np.array(sim_logliks)
     else:
-        process_pool = multiprocessing.get_context("spawn").Pool(n_processes)
-        args_list = [(X, sim_count, X_exp, r, p)] * n_processes
-        sim_logliks = process_pool.imap_unordered(_sim_loglik_helper_func,
-                                                  args_list)
+        with joblib.parallel_backend("loky", inner_max_num_threads=n_threads):
+            parallel_run = joblib.Parallel(n_processes)
+            sim_logliks = parallel_run(
+                joblib.delayed(_sim_loglik_helper_func)(*args)
+                for args in [(X, sim_count, X_exp, r, p)] * n_processes)
         sim_logliks = np.concatenate(list(sim_logliks), axis=0)
 
     # Calculate empirical P values for row sample.
@@ -681,9 +663,8 @@ def fit(
         errors.append(error)
         if verbose:
             elapsed = time.time() - start_time
-            logging.info(
-                "Iteration {} after {:.3f} seconds, error: {}".format(
-                    n_iter, elapsed, error))
+            logging.info("Iteration {} after {:.3f} seconds, error: {}".format(
+                n_iter, elapsed, error))
         if previous_error is None:
             previous_error = error
         elif previous_error - error < abstol * epoch_len:
@@ -715,23 +696,24 @@ def _fit_worker_wrapper(args_kwargs_tuple):
     return fit(*args, **kwargs)
 
 
-def mpfit(
-        random_inits,
-        n_processes=None,
-        random_state=None,
-        verbose=False,
-        *args,
-        **kwargs):
+def mpfit(random_inits,
+          n_processes,
+          n_threads=None,
+          random_state=None,
+          verbose=False,
+          *args,
+          **kwargs):
     """Parallelised NMF fitting.
 
     Args:
         random_inits (int): The number of random initialisations to fit using
             NMF.
-        n_processes (int): Number of processes to spawn. By default,
-            :func:`os.cpu_count` - 1  is used.
+        n_processes (int): Number of processes to spawn.
+        n_threads (int): Number of processes to use per process. By default,
+            max(cpu_count() // effective_n_jobs, 1).
         random_state (int): If provided, then the random states used are for
             each random initialisation are `random_state` +
-            np.array(range(random_inits)).
+            :code:`np.array(range(random_inits))`.
         verbose (bool): Whether to show a progress bar.
         args (list): Positional arguments for :func:`fit`.
         kwargs (dict): Keyword arguments for :func:`fit`.
@@ -742,9 +724,6 @@ def mpfit(
     See also:
         Additional argument documentation is found in function :func:`fit`.
     """
-    if n_processes is None:
-        n_processes = os.cpu_count() - 1
-
     # Create argument list for fit(). The last three arguments are 'verbose',
     # and 'random_state'.
     if random_state is None:
@@ -755,15 +734,12 @@ def mpfit(
             cur_kwargs = kwargs.copy()
             cur_kwargs['random_state'] = random_state + i
             args_list.append((args, cur_kwargs))
-    process_pool = multiprocessing.get_context("spawn").Pool(n_processes)
     if verbose:
-        fitted_res = list(
-            tqdm.tqdm(process_pool.imap_unordered(_fit_worker_wrapper,
-                                                  args_list),
-                      total=random_inits))
-    else:
-        fitted_res = list(
-            process_pool.imap_unordered(_fit_worker_wrapper, args_list))
+        args_list = tqdm.tqdm(args_list)
+    with joblib.parallel_backend("loky", inner_max_num_threads=n_threads):
+        parallel_run = joblib.Parallel(n_processes)
+        fitted_res = parallel_run(
+            joblib.delayed(fit)(*args, **kwargs) for args, kwargs in args_list)
     return fitted_res
 
 
@@ -806,13 +782,7 @@ def hk_lrt(
     if h_hat is not None:
         h_hat = h_hat.reshape(-1, 1)
     else:
-        _, h_hat, _, _, _ = fit(x_obs,
-                                None,
-                                S,
-                                O,
-                                W_fixed=W,
-                                r=r,
-                                **fit_kwargs)
+        _, h_hat, _, _, _ = fit(x_obs, None, S, O, W_fixed=W, r=r, **fit_kwargs)
 
     # Overall ML log-likelihood.
     ml_loglik = np.sum(loglik(x_obs, None, r, W, h_hat, S, O))
@@ -1030,10 +1000,10 @@ def hk_confint(
         obs_confint_upper_bound = confint_upper_bound
     else:
         obs_hi_hat = np.sum(W[:, [sig_idx]] * h_hat[sig_idx, 0] * S)
-        obs_confint_lower_bound = np.sum(
-            W[:, [sig_idx]] * confint_lower_bound * S)
-        obs_confint_upper_bound = np.sum(
-            W[:, [sig_idx]] * confint_upper_bound * S)
+        obs_confint_lower_bound = np.sum(W[:, [sig_idx]] * confint_lower_bound *
+                                         S)
+        obs_confint_upper_bound = np.sum(W[:, [sig_idx]] * confint_upper_bound *
+                                         S)
 
     return (obs_hi_hat, obs_confint_lower_bound, obs_confint_upper_bound,
             h0_chi2_pval, h0_chi2_stat, ml_loglik, h0_loglik, h_hat[sig_idx, 0],
@@ -1224,7 +1194,7 @@ class SingleNMFModel:
         self.gof_sim_count = gof_sim_count
         self.fitted = None
 
-    def fit(self, verbose=False, multiprocess=False, **kwargs):
+    def fit(self, verbose=False, n_processes=1, **kwargs):
         """Fit the current NMF model and compute goodness-of-fit.
 
         The results are stored in :attr:`fitted`.
@@ -1232,16 +1202,13 @@ class SingleNMFModel:
         Args:
             verbose (bool): Whether to show a progress bar for progress in
                 random initialisation fits.
-            multiprocess (bool or int): Whether to use multiprocessing. If int,
-                then that number of parallel processes are spawned. If True,
-                then the number of processes is set to :func:`os.cpu_count` - 1.
+            n_processes (int): Number of parallel processes to use.
             **kwargs: Keyword arguments for :func:`nmflib.nmf.fit`.
         """
-        processes_to_spawn = _get_cpu_count(multiprocess)
         start_time = time.time()
 
         # Compute the best decomposition.
-        if processes_to_spawn == 1:
+        if n_processes == 1:
             errors_best = None
             if verbose == 1:
                 random_init_range = tqdm.tqdm(range(self.random_inits))
@@ -1249,8 +1216,12 @@ class SingleNMFModel:
                 random_init_range = range(self.random_inits)
             fit_verbose = verbose > 1
             for _ in random_init_range:
-                W, H, r, n_iter, errors = fit(self.X, self.rank, self.S, self.O,
-                                              self.nbinom, verbose=fit_verbose,
+                W, H, r, n_iter, errors = fit(self.X,
+                                              self.rank,
+                                              self.S,
+                                              self.O,
+                                              self.nbinom,
+                                              verbose=fit_verbose,
                                               **kwargs)
                 if errors_best is None or errors[-1] < errors_best[-1]:
                     W_best, H_best, r_best, n_iter_best = W, H, r, n_iter
@@ -1262,7 +1233,7 @@ class SingleNMFModel:
                                   self.S,
                                   self.O,
                                   self.nbinom,
-                                  n_processes=processes_to_spawn,
+                                  n_processes=n_processes,
                                   verbose=verbose,
                                   **kwargs)
             best_model_idx = np.argmax([m[4][-1] for m in fitted_models])
@@ -1286,13 +1257,11 @@ class SingleNMFModel:
             'elapsed': elapsed
         }
 
-    def gof(self, multiprocess=False):
+    def gof(self, n_processes=1):
         """Compute simulated goodness-of-fit.
 
         Args:
-            multiprocess (bool or int): Whether to use multiprocessing. If int,
-                then that number of parallel processes are spawned. If True,
-                then the number of processes is set to :func:`os.cpu_count` - 1.
+            n_processes (int): Number of parallel processes to use.
 
         Returns:
             float: Goodness-of-fit KS statistic.
@@ -1306,13 +1275,12 @@ class SingleNMFModel:
         if self.fitted is None:
             raise ValueError(
                 'self.fitted is None. Please run self.fit() first.')
-        processes_to_spawn = _get_cpu_count(multiprocess)
         gof_D, gof_pval, sample_gof_pval, sim_logliks = gof(
             self.X,
             self.fitted['X_pred'],
             self.gof_sim_count,
             r=self.fitted['r'],
-            n_processes=processes_to_spawn)
+            n_processes=n_processes)
         return gof_D, gof_pval, sample_gof_pval, sim_logliks
 
     def aic(self):
@@ -1334,8 +1302,14 @@ class SingleNMFModel:
         bic = calc_bic(self.fitted['loglik'], param_count, sample_count)
         return bic
 
-    def predict(self, X_new=None, S_new=None, O_new=None, alpha=0.05,
-                n_inits=10, verbose=False, **kwargs):
+    def predict(self,
+                X_new=None,
+                S_new=None,
+                O_new=None,
+                alpha=0.05,
+                n_inits=10,
+                verbose=False,
+                **kwargs):
         """Fit H MLEs and alpha-confidence intervals for a new count matrix.
 
         Args:
@@ -1379,11 +1353,19 @@ class SingleNMFModel:
                 cur_O = None
             else:
                 cur_O = O_new[sample].values
-            confint_df = h_confint(X_new[sample].values, self.fitted['W'],
-                                   cur_S, cur_O, alpha, self.fitted['r'],
-                                   n_inits=n_inits, **kwargs)
+            confint_df = h_confint(X_new[sample].values,
+                                   self.fitted['W'],
+                                   cur_S,
+                                   cur_O,
+                                   alpha,
+                                   self.fitted['r'],
+                                   n_inits=n_inits,
+                                   **kwargs)
             confint_df.index = pd.MultiIndex.from_frame(
-                pd.DataFrame({'signature': range(self.rank), 'sample': sample}))
+                pd.DataFrame({
+                    'signature': range(self.rank),
+                    'sample': sample
+                }))
             confint_dfs.append(confint_df)
         full_df = pd.concat(confint_dfs)
         return full_df
@@ -1479,14 +1461,13 @@ class SignaturesModel:
         self.gof_sim_count = gof_sim_count
         self.fitted = None
 
-    def fit(self, verbose=False, multiprocess=False, **kwargs):
+    def fit(self, verbose=False, n_processes=1, **kwargs):
         """Fit all NMF ranks and store their goodness-of-fit values.
 
         Args:
             verbose (bool): Whether to show a progress bar for progress in
                 random initialisation fits.
-            multiprocess (bool or int): Whether to use multiprocessing. See
-                :meth:`SingleNMFModel.fit`.
+            n_processes (int): Number of parallel processes to use.
             **kwargs: Keyword arguments for :func:`nmflib.nmf.fit`.
         """
         model_of_rank = {}
@@ -1495,15 +1476,16 @@ class SignaturesModel:
             model_of_rank[rank] = SingleNMFModel(self.X, rank, self.S, self.O,
                                                  self.nbinom, self.random_inits,
                                                  self.gof_sim_count)
-            model_of_rank[rank].fit(verbose, multiprocess, **kwargs)
+            model_of_rank[rank].fit(verbose, n_processes, **kwargs)
         model_tuples = []
         for rank in self.ranks_to_test:
             m = model_of_rank[rank]
             tuple_to_append = [m, m.fitted['r'], m.fitted['loglik']]
-            tuple_to_append += m.gof(multiprocess)[:2]
+            tuple_to_append += m.gof(n_processes)[:2]
             tuple_to_append += (m.aic(), m.bic())
-            tuple_to_append += [m.fitted['n_iter'], m.fitted['errors'][-1],
-                                m.fitted['elapsed']]
+            tuple_to_append += [
+                m.fitted['n_iter'], m.fitted['errors'][-1], m.fitted['elapsed']
+            ]
             model_tuples.append(tuple_to_append)
         columns = ('nmf_model', 'dispersion', 'log-likelihood', 'gof_D',
                    'gof_pval', 'aic', 'bic', 'n_iter', 'final_error', 'elapsed')
