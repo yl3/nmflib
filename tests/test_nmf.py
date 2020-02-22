@@ -295,6 +295,7 @@ def test_fit_nmf_small_dataset(use_S, use_O, caplog):
 
 @synthetic_nmf_data_dir
 @pytest.mark.slow
+@pytest.mark.parallel
 def test_mpfit(datafiles):
     """
     Make sure nmf.mpfit() works and is (slightly) faster than just fit().
@@ -305,13 +306,32 @@ def test_mpfit(datafiles):
     O = synthetic_pcawg_data.O  # noqa: E741
     TARGET_RANK = 20
 
+    # Measure time without multiprocessing.
+    start_time = time.time()
+    sp_res = []
+    for i in range(2):
+        sp_res.append(
+            nmflib.nmf.mpfit(
+                random_inits=2,
+                n_processes=1,
+                n_threads=1,
+                random_state=0,
+                verbose=False,
+                X=X_obs,
+                k=TARGET_RANK,
+                S=S,
+                O=O,  # noqa: E741
+                nbinom_fit=True))
+    single_process_elapsed = time.time() - start_time
+
     # Measure time with multiprocessing.
     start_time = time.time()
     mp_res = nmflib.nmf.mpfit(
-        2,
-        2,
-        0,
-        False,
+        random_inits=2,
+        n_processes=2,
+        n_threads=1,
+        random_state=0,
+        verbose=False,
         X=X_obs,
         k=TARGET_RANK,
         S=S,
@@ -319,15 +339,8 @@ def test_mpfit(datafiles):
         nbinom_fit=True)
     multiprocess_elapsed = time.time() - start_time
 
-    # Measure time without multiprocessing.
-    start_time = time.time()
-    sp_res = []
-    for i in range(2):
-        sp_res.append(
-            nmflib.nmf.fit(X_obs, TARGET_RANK, S, O, True, random_state=i))
-    single_process_elapsed = time.time() - start_time
     assert len(mp_res) == len(sp_res) == 2
-    assert single_process_elapsed / multiprocess_elapsed > 1.2
+    assert single_process_elapsed / multiprocess_elapsed > 1.5
 
 
 def test_match_components():
@@ -373,6 +386,7 @@ def test_nmf_gof():
 
 @synthetic_nmf_data_dir
 @pytest.mark.slow
+@pytest.mark.parallel
 def test_parallel_gof(datafiles):
     """Make sure nmf.mpfit() works and is faster than just fit()."""
     true_r = 10
@@ -382,12 +396,12 @@ def test_parallel_gof(datafiles):
 
     # Measure time with and without multiprocessing.
     start_time = time.time()
-    nmflib.nmf.gof(X_obs, X_exp, 100, r=true_r, n_processes=2)
+    nmflib.nmf.gof(X_obs, X_exp, 100, r=true_r, n_processes=2, n_threads=1)
     multiprocess_elapsed = time.time() - start_time
     start_time = time.time()
-    nmflib.nmf.gof(X_obs, X_exp, 200, r=true_r, n_processes=1)
+    nmflib.nmf.gof(X_obs, X_exp, 200, r=true_r, n_processes=1, n_threads=1)
     single_process_elapsed = time.time() - start_time
-    assert single_process_elapsed / multiprocess_elapsed > 1.2
+    assert single_process_elapsed / multiprocess_elapsed > 1.5
 
 
 def test_signatures_model():
