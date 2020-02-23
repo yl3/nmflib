@@ -698,10 +698,10 @@ def _fit_worker_wrapper(args_kwargs_tuple):
 
 def mpfit(random_inits,
           n_processes,
+          *args,
           n_threads=None,
           random_state=None,
           verbose=False,
-          *args,
           **kwargs):
     """Parallelised NMF fitting.
 
@@ -734,12 +734,14 @@ def mpfit(random_inits,
             cur_kwargs = kwargs.copy()
             cur_kwargs['random_state'] = random_state + i
             args_list.append((args, cur_kwargs))
-    if verbose:
+    if verbose == 1:
         args_list = tqdm.tqdm(args_list)
+    fit_verbose = verbose > 1
     with joblib.parallel_backend("loky", inner_max_num_threads=n_threads):
         parallel_run = joblib.Parallel(n_processes)
         fitted_res = parallel_run(
-            joblib.delayed(fit)(*args, **kwargs) for args, kwargs in args_list)
+            joblib.delayed(fit)(*args, verbose=fit_verbose, **kwargs)
+            for args, kwargs in args_list)
     return fitted_res
 
 
@@ -1194,7 +1196,7 @@ class SingleNMFModel:
         self.gof_sim_count = gof_sim_count
         self.fitted = None
 
-    def fit(self, verbose=False, n_processes=1, **kwargs):
+    def fit(self, verbose=False, n_processes=1, n_threads=None, **kwargs):
         """Fit the current NMF model and compute goodness-of-fit.
 
         The results are stored in :attr:`fitted`.
@@ -1203,42 +1205,26 @@ class SingleNMFModel:
             verbose (bool): Whether to show a progress bar for progress in
                 random initialisation fits.
             n_processes (int): Number of parallel processes to use.
+            n_threads (int): Number of processes to use per process. By default,
+                max(cpu_count() // effective_n_jobs, 1).
             **kwargs: Keyword arguments for :func:`nmflib.nmf.fit`.
         """
         start_time = time.time()
 
         # Compute the best decomposition.
-        if n_processes == 1:
-            errors_best = None
-            if verbose == 1:
-                random_init_range = tqdm.tqdm(range(self.random_inits))
-            else:
-                random_init_range = range(self.random_inits)
-            fit_verbose = verbose > 1
-            for _ in random_init_range:
-                W, H, r, n_iter, errors = fit(self.X,
-                                              self.rank,
-                                              self.S,
-                                              self.O,
-                                              self.nbinom,
-                                              verbose=fit_verbose,
-                                              **kwargs)
-                if errors_best is None or errors[-1] < errors_best[-1]:
-                    W_best, H_best, r_best, n_iter_best = W, H, r, n_iter
-                    errors_best = errors
-        else:
-            fitted_models = mpfit(self.random_inits,
-                                  self.X,
-                                  self.rank,
-                                  self.S,
-                                  self.O,
-                                  self.nbinom,
-                                  n_processes=n_processes,
-                                  verbose=verbose,
-                                  **kwargs)
-            best_model_idx = np.argmax([m[4][-1] for m in fitted_models])
-            W_best, H_best, r_best, n_iter_best, errors_best = \
-                fitted_models[best_model_idx]
+        fitted_models = mpfit(self.random_inits,
+                              n_processes,
+                              self.X,
+                              self.rank,
+                              self.S,
+                              self.O,
+                              self.nbinom,
+                              n_threads=n_threads,
+                              verbose=verbose,
+                              **kwargs)
+        best_model_idx = np.argmax([m[4][-1] for m in fitted_models])
+        W_best, H_best, r_best, n_iter_best, errors_best = \
+            fitted_models[best_model_idx]
 
         elapsed = time.time() - start_time
 
@@ -1461,13 +1447,15 @@ class SignaturesModel:
         self.gof_sim_count = gof_sim_count
         self.fitted = None
 
-    def fit(self, verbose=False, n_processes=1, **kwargs):
+    def fit(self, verbose=False, n_processes=1, n_threads=None, **kwargs):
         """Fit all NMF ranks and store their goodness-of-fit values.
 
         Args:
             verbose (bool): Whether to show a progress bar for progress in
                 random initialisation fits.
             n_processes (int): Number of parallel processes to use.
+            n_threads (int): Number of processes to use per process. By default,
+                max(cpu_count() // effective_n_jobs, 1).
             **kwargs: Keyword arguments for :func:`nmflib.nmf.fit`.
         """
         model_of_rank = {}
@@ -1476,7 +1464,7 @@ class SignaturesModel:
             model_of_rank[rank] = SingleNMFModel(self.X, rank, self.S, self.O,
                                                  self.nbinom, self.random_inits,
                                                  self.gof_sim_count)
-            model_of_rank[rank].fit(verbose, n_processes, **kwargs)
+            model_of_rank[rank].fit(verbose, n_processes, n_threads, **kwargs)
         model_tuples = []
         for rank in self.ranks_to_test:
             m = model_of_rank[rank]
