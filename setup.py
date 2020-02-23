@@ -7,4 +7,12 @@ setup(name='nmflib',
       author_email='yilong.li.yl3@gmail.com',
       packages=find_packages('src'),
       package_dir={'': 'src'},
+      install_requires=[
+          'numpy',
+          'pandas',
+          'progressbar2',
+          'pysam',
+          'tqdm',
+          'joblib',
+      ],
       zip_safe=False)
