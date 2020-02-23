@@ -1194,7 +1194,7 @@ class SingleNMFModel:
         self.gof_sim_count = gof_sim_count
         self.fitted = None
 
-    def fit(self, verbose=False, n_processes=1, **kwargs):
+    def fit(self, verbose=False, n_processes=1, n_threads=None, **kwargs):
         """Fit the current NMF model and compute goodness-of-fit.
 
         The results are stored in :attr:`fitted`.
@@ -1203,12 +1203,14 @@ class SingleNMFModel:
             verbose (bool): Whether to show a progress bar for progress in
                 random initialisation fits.
             n_processes (int): Number of parallel processes to use.
+            n_threads (int): Number of processes to use per process. By default,
+                max(cpu_count() // effective_n_jobs, 1).
             **kwargs: Keyword arguments for :func:`nmflib.nmf.fit`.
         """
         start_time = time.time()
 
         # Compute the best decomposition.
-        if n_processes == 1:
+        if n_processes == 1 or n_threads is not None:
             errors_best = None
             if verbose == 1:
                 random_init_range = tqdm.tqdm(range(self.random_inits))
@@ -1234,6 +1236,7 @@ class SingleNMFModel:
                                   self.O,
                                   self.nbinom,
                                   n_processes=n_processes,
+                                  n_threads=n_threads,
                                   verbose=verbose,
                                   **kwargs)
             best_model_idx = np.argmax([m[4][-1] for m in fitted_models])
@@ -1461,13 +1464,15 @@ class SignaturesModel:
         self.gof_sim_count = gof_sim_count
         self.fitted = None
 
-    def fit(self, verbose=False, n_processes=1, **kwargs):
+    def fit(self, verbose=False, n_processes=1, n_threads=None, **kwargs):
         """Fit all NMF ranks and store their goodness-of-fit values.
 
         Args:
             verbose (bool): Whether to show a progress bar for progress in
                 random initialisation fits.
             n_processes (int): Number of parallel processes to use.
+            n_threads (int): Number of processes to use per process. By default,
+                max(cpu_count() // effective_n_jobs, 1).
             **kwargs: Keyword arguments for :func:`nmflib.nmf.fit`.
         """
         model_of_rank = {}
