@@ -513,7 +513,7 @@ def gof(X,
         p = _nb_p(X_exp, r)
     else:
         p = None
-    if n_processes == 1:
+    if n_processes == 1 and n_threads is None:
         sim_logliks = _sim_loglik_helper_func(X, sim_count, X_exp, r, p)
         sim_logliks = np.array(sim_logliks)
     else:
