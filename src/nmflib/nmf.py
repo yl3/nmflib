@@ -1222,7 +1222,7 @@ class SingleNMFModel:
                               n_threads=n_threads,
                               verbose=verbose,
                               **kwargs)
-        best_model_idx = np.argmax([m[4][-1] for m in fitted_models])
+        best_model_idx = np.argmin([m[4][-1] for m in fitted_models])
         W_best, H_best, r_best, n_iter_best, errors_best = \
             fitted_models[best_model_idx]
 
